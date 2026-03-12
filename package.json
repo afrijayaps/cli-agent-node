@@ -1,0 +1,13 @@
+{
+  "name": "cli-agent-node",
+  "version": "1.0.0",
+  "description": "AI CLI Agent Server",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

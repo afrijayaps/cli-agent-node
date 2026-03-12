@@ -1,0 +1,180 @@
+# Operations Guide
+
+Panduan operasional untuk menjalankan server di environment Linux (termasuk akses dari device lain via Tailscale/LAN).
+
+## 1) Menjalankan Aplikasi
+
+```bash
+cd /www/wwwroot/.cli-agent-node
+npm install
+npm start
+```
+
+## 2) Jalankan Sebagai Service (systemd)
+
+Contoh service:
+
+`/etc/systemd/system/cli-agent-node.service`
+
+```ini
+[Unit]
+Description=AI CLI Agent Node Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/www/wwwroot/.cli-agent-node
+ExecStart=/usr/bin/node /www/wwwroot/.cli-agent-node/server.js
+Restart=always
+RestartSec=2
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Perintah:
+
+```bash
+systemctl daemon-reload
+systemctl enable --now cli-agent-node
+systemctl status cli-agent-node
+```
+
+## 3) Port dan Firewall
+
+Server listen di port `8000`.
+
+Cek port:
+
+```bash
+ss -lntp | rg :8000
+```
+
+Jika pakai UFW dan akses via Tailscale:
+
+```bash
+ufw allow in on tailscale0 to any port 8000 proto tcp
+ufw status
+```
+
+## 4) Login Provider CLI
+
+Default provider aplikasi: `codex`.
+
+Login codex di server:
+
+```bash
+codex login
+```
+
+Tes non-interaktif (dipakai server):
+
+```bash
+codex exec "say ok"
+```
+
+Catatan:
+
+- Server menggunakan mode non-interaktif untuk codex (`codex exec`), bukan mode TUI interaktif.
+
+## 5) Monitoring dan Log
+
+Status service:
+
+```bash
+systemctl status cli-agent-node --no-pager -l
+```
+
+Log terakhir:
+
+```bash
+journalctl -u cli-agent-node -n 200 --no-pager
+```
+
+Follow log:
+
+```bash
+journalctl -u cli-agent-node -f
+```
+
+## 6) Master Project Root (Aturan Sumber Project)
+
+Aplikasi membaca daftar project dari subfolder di `masterProjectRoot`.
+
+Lihat setting aktif:
+
+```bash
+curl http://127.0.0.1:8000/api/settings
+```
+
+Set master root:
+
+```bash
+curl -X PUT http://127.0.0.1:8000/api/settings \
+  -H "Content-Type: application/json" \
+  -d '{"masterProjectRoot":"/www/wwwroot"}'
+```
+
+Verifikasi hasil scan project:
+
+```bash
+curl http://127.0.0.1:8000/api/projects
+```
+
+## 7) Troubleshooting
+
+### A. Tidak bisa akses dari PC lain
+
+Checklist:
+
+1. Service aktif:
+   - `systemctl is-active cli-agent-node`
+2. Port listen:
+   - `ss -lntp | rg :8000`
+3. Firewall allow:
+   - `ufw status`
+4. Uji dari server:
+   - `curl http://127.0.0.1:8000/health`
+5. Uji dari remote:
+   - `curl http://<ip-server>:8000/health`
+
+### B. Error login / provider gagal
+
+Jika response `502`:
+
+- Pastikan binary provider ada di PATH (`which codex`).
+- Pastikan sudah login (`codex login`).
+- Tes manual:
+  - `codex exec "test"`
+
+### C. Session tidak muncul
+
+- Cek data tersimpan di:
+  - `data/projects/.../sessions/*.json`
+- Cek API:
+  - `GET /api/projects`
+  - `GET /api/projects/:projectId/sessions`
+
+### D. Project list kosong
+
+- Pastikan `masterProjectRoot` benar dan absolut:
+  - `GET /api/settings`
+- Pastikan folder root memang ada dan berisi subfolder project:
+  - `ls -la <masterProjectRoot>`
+- Trigger reload project list:
+  - `GET /api/projects`
+
+## 8) Backup Data Session
+
+Backup folder data:
+
+```bash
+tar -czf cli-agent-node-data-backup.tar.gz /www/wwwroot/.cli-agent-node/data
+```
+
+Restore:
+
+```bash
+tar -xzf cli-agent-node-data-backup.tar.gz -C /
+```

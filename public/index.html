@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="aether">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI CLI Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Public+Sans:wght@300;400;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/themes.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="panel" id="sidePanel">
+        <div class="panel-head">
+          <div class="badge">CLI AUTH MODE</div>
+          <button id="closePanelButton" type="button" class="button" style="display: none; width: auto; padding: 6px 10px">Tutup</button>
+          <h2 style="margin: 10px 0 0; font-size: 20px">Agent Workspace</h2>
+          <p class="small" style="margin: 6px 0 0">Project picker + session history persisted in folder storage.</p>
+        </div>
+
+        <section class="section">
+          <h3>Project Source Root</h3>
+          <p class="small" style="margin: 0 0 10px">
+            Folder project diambil otomatis dari path master berikut:
+          </p>
+          <input
+            id="masterRootInputInline"
+            class="input"
+            placeholder="/www/wwwroot"
+            style="margin-bottom: 8px"
+          />
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px">
+            <button id="saveRootButton" type="button" class="button primary">OK</button>
+            <button id="editRootButton" type="button" class="button">Buka/Edit</button>
+          </div>
+          <button id="refreshProjectsButton" type="button" class="button">Refresh Project List</button>
+        </section>
+
+        <section class="section">
+          <h3>Current Project</h3>
+          <select id="projectSelect" class="select"></select>
+          <p id="projectPathLabel" class="small" style="margin-top: 8px"></p>
+        </section>
+
+        <section class="section">
+          <h3>Sessions</h3>
+          <form id="sessionForm" class="row" style="margin-bottom: 10px">
+            <input id="sessionTitle" class="input" placeholder="New session title (optional)" />
+            <button type="submit" class="button">Create Session</button>
+          </form>
+          <ul id="sessionList" class="session-list"></ul>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-head">
+          <div>
+            <h1 id="activeProjectName" class="workspace-title">No project selected</h1>
+            <p id="activeSessionName" class="workspace-subtitle">Select a project folder and create a session to start chatting.</p>
+          </div>
+          <div style="display: flex; gap: 8px">
+            <button id="openPanelButton" type="button" class="button" style="width: auto; padding: 9px 12px">Settings</button>
+            <a href="/settings" class="button" style="width: auto; padding: 9px 12px">Theme</a>
+          </div>
+        </header>
+
+        <section id="chatLog" class="chat-log">
+          <div class="empty" id="emptyState">
+            <h3 style="margin-top: 0">Ready for CLI-based AI</h3>
+            <p class="small" style="margin-bottom: 0">
+              Pilih folder project dari master path, buat session, lalu kirim prompt. Chat tersimpan dan bisa dibuka lagi kapan saja.
+            </p>
+          </div>
+        </section>
+
+        <form id="askForm" class="composer">
+          <div class="composer-row">
+            <select id="providerSelect" class="select"></select>
+            <textarea id="promptInput" class="textarea" placeholder="Tulis prompt untuk CLI provider..." required></textarea>
+            <button id="sendButton" class="button primary" type="submit" style="width: auto; min-width: 90px">Send</button>
+          </div>
+          <div id="statusText" class="status">Status: idle</div>
+        </form>
+      </main>
+    </div>
+    <div id="panelBackdrop" class="panel-backdrop"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

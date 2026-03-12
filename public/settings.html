@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" data-theme="aether" data-page="settings">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI CLI Agent Settings</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Public+Sans:wght@300;400;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/css/themes.css" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <style>
+      html[data-page='settings'],
+      html[data-page='settings'] body {
+        height: auto !important;
+        min-height: 100dvh !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="setting-wrap">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px">
+        <div>
+          <div class="badge">CLI LOGIN ONLY</div>
+          <h1 style="margin: 10px 0 0">Settings</h1>
+          <p class="small" style="margin: 6px 0 0">Pilih tema visual. Tidak perlu API key karena provider menggunakan CLI login di server.</p>
+        </div>
+        <a href="/" class="button" style="width: auto; padding: 10px 14px">Back to Chat</a>
+      </div>
+
+      <section class="setting-panel">
+        <div class="setting-head">
+          <h2 style="margin: 0 0 6px">Master Project Root</h2>
+          <p class="small" style="margin: 0">
+            Folder di dalam path ini otomatis masuk daftar project yang bisa dipilih di halaman chat.
+          </p>
+        </div>
+        <div class="cli-box">
+          <form id="masterRootForm" class="row">
+            <label class="small" for="masterRootInput">Absolute path (contoh: <code>/www/wwwroot</code>)</label>
+            <input id="masterRootInput" class="input" placeholder="/www/wwwroot" required />
+            <button type="submit" class="button primary">Save Master Root</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="setting-panel">
+        <div class="setting-head">
+          <h2 style="margin: 0 0 6px">Theme</h2>
+          <p class="small" style="margin: 0">Tema dibuat modular agar mudah ditambah/edit.</p>
+        </div>
+        <div id="themeGrid" class="theme-grid"></div>
+      </section>
+
+      <section class="setting-panel">
+        <div class="setting-head">
+          <h2 style="margin: 0 0 6px">CLI Provider Login</h2>
+          <p class="small" style="margin: 0">Authentication tetap lewat tool CLI, bukan API key di aplikasi ini. Provider default: <strong>codex</strong>.</p>
+        </div>
+        <div class="cli-box">
+          <div class="small">Kalau belum login Codex, jalankan dulu di terminal server:</div>
+          <div class="code">codex login</div>
+          <div class="small">Lalu cek command CLI:</div>
+          <div class="code">codex --help</div>
+          <div class="code">claude --help</div>
+          <div class="code">ollama list</div>
+          <div class="small">Provider tersedia: <span id="providerList">-</span></div>
+        </div>
+      </section>
+
+      <div id="settingsStatus" class="status">Status: idle</div>
+    </main>
+
+    <script type="module" src="/js/settings.js"></script>
+  </body>
+</html>
