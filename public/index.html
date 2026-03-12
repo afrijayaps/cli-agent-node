@@ -16,7 +16,7 @@
         <div class="panel-head">
           <div class="badge">CLI AUTH MODE</div>
           <button id="closePanelButton" type="button" class="button" style="display: none; width: auto; padding: 6px 10px">Tutup</button>
-          <h2 style="margin: 10px 0 0; font-size: 20px">Agent Workspace</h2>
+          <h2 style="margin: 10px 0 0; font-size: 20px">Menu</h2>
           <p class="small" style="margin: 6px 0 0">Project picker + session history persisted in folder storage.</p>
         </div>
 
@@ -57,11 +57,10 @@
       <main class="workspace">
         <header class="workspace-head">
           <div>
-            <h1 id="activeProjectName" class="workspace-title">No project selected</h1>
+            <h1 id="activeProjectName" class="workspace-title menu-trigger" role="button" tabindex="0" aria-label="Open menu">No project selected</h1>
             <p id="activeSessionName" class="workspace-subtitle">Select a project folder and create a session to start chatting.</p>
           </div>
           <div style="display: flex; gap: 8px">
-            <button id="openPanelButton" type="button" class="button" style="width: auto; padding: 9px 12px">Settings</button>
             <a href="/settings" class="button" style="width: auto; padding: 9px 12px">Theme</a>
           </div>
         </header>

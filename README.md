@@ -13,16 +13,19 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
   - kirim prompt dalam session.
 - Frontend web:
   - halaman chat: `/`
-  - halaman settings: `/settings`
+  - halaman settings: `/settings` (tema + session manager)
 - Frontend saat ini: Vanilla JS modular (tanpa React), dengan animasi UI (message reveal, typing indicator, hover motion).
-- Proses menjawab dibuat lebih hidup: progress/fase thinking dinamis, telemetry (token/s, latency, confidence), pipeline status real-time, scan/orbit effect, dan flash reveal saat jawaban assistant tiba.
+- Proses menjawab menampilkan lifecycle real request (send prompt, wait provider, persist response) dengan timer elapsed real-time.
+- Jika proses gagal, indikator proses berubah merah dan kartu `Peringatan` tampil di chat.
 - Mobile-first UX: panel kontrol project/session tampil sebagai popup settings (slide-in) dan fokus utama di area chat.
-- Jika provider gagal, UI menampilkan kartu `Peringatan` langsung di area chat (detail error + saran troubleshooting).
+- Konten assistant tetap tampil penuh tanpa bubble besar; code block ditampilkan sebagai codebox compact dengan tombol copy.
+- Placeholder input prompt menampilkan `session.id` aktif agar mudah tracking sesi.
 - Theme modular (default `aether`, opsi `slate`, `ember`).
 - Default provider: `codex`.
 - Daftar project otomatis diambil dari subfolder di dalam `masterProjectRoot`.
 - Penyimpanan session persisten di folder `data/projects/...`.
 - Auth provider tetap lewat CLI login di server (bukan API key aplikasi).
+- CLI provider dieksekusi dengan `cwd` sesuai folder project yang dipilih.
 
 ## Arsitektur Ringkas
 
@@ -52,11 +55,12 @@ Isi:
 
 Contoh:
 
-`data/projects/cli-agent-node/www-wwwroot-cli-agent-node/sessions/s-xxxx.json`
+`data/projects/cli-agent-node/www-wwwroot-cli-agent-node/sessions/farm.asrijaya.com::a1b2c3.json`
 
 Catatan:
 
 - Struktur lama satu level project tetap didukung untuk backward compatibility.
+- Format `session.id`: `<folderProject>::<6-char>` (contoh `farm.asrijaya.com::a1b2c3`).
 
 ## Rule Project Source (Master Path)
 
@@ -68,21 +72,22 @@ Catatan:
 
 ## Motion Engine (UI Chat)
 
-Animasi proses jawaban dikelola modular di:
+Status proses jawaban dikelola modular di:
 
 - `public/js/app.js`:
-  - `THINKING_PHASES`, `THINKING_PIPELINE`, `THINKING_NOTES`
-  - `startThinkingAnimation()` / `stopThinkingAnimation()`
-  - telemetry update via `updateThinkingMetrics()`
-  - efek kedatangan jawaban via `scheduleAssistantFlash()`
+  - state proses: `state.process` (label, elapsed time, error mode)
+  - `startThinkingAnimation()` / `setProcessLabel()` / `stopThinkingAnimation()`
+  - tombol `Send` otomatis berubah `Stop` saat request aktif (abort request)
+  - parser konten assistant: text tetap tampil, code fence jadi codebox dengan copy button
 - `public/css/base.css`:
-  - class utama: `.thinking-shell`, `.thinking-telemetry`, `.thinking-pipeline`, `.assistant-arrived`
-  - keyframes utama: `thinkingShimmer`, `gridDrift`, `orbitSpin`, `arrivalSweep`, `dataBars`
+  - class proses compact: `.thinking-live`, `.thinking-inline`, `.thinking-live.error`
+  - class assistant compact: `.message.assistant-flat`, `.code-card.compact`
+  - warning level: `.message.warning.error` dan `.message.warning.info`
 
 Catatan tuning cepat:
 
-- ingin animasi lebih cepat/lambat: ubah interval di `startThinkingAnimation()`.
-- ingin glow lebih kuat/lembut: ubah opacity di class `.thinking-live`, `.assistant-arrived`, `.thinking-grid`.
+- ingin update timer proses lebih cepat/lambat: ubah interval di `startThinkingAnimation()`.
+- ingin ubah gaya warning error/info: edit class `.message.warning.error` / `.message.warning.info`.
 - tetap accessible: mode `prefers-reduced-motion: reduce` sudah didukung.
 
 ## Prasyarat

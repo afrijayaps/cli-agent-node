@@ -32,9 +32,21 @@ function toSafeCliError(error, stderr) {
   };
 }
 
-async function runCommand(command) {
+async function runCommand(command, options = {}) {
   return new Promise((resolve, reject) => {
-    exec(command, { timeout: 0, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    let finalCommand = command;
+    const execOptions = {
+      timeout: 0,
+      maxBuffer: 10 * 1024 * 1024,
+    };
+
+    if (options && typeof options.cwd === 'string' && options.cwd.trim().length > 0) {
+      const cwd = options.cwd.trim();
+      execOptions.cwd = cwd;
+      finalCommand = `cd ${escapeShellArg(cwd)} && ${command}`;
+    }
+
+    exec(finalCommand, execOptions, (error, stdout, stderr) => {
       if (error) {
         reject(toSafeCliError(error, stderr));
         return;

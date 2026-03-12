@@ -21,6 +21,21 @@ body {
   transition: background 220ms ease, color 220ms ease;
 }
 
+:root {
+  --app-height: 100vh;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
+}
+
+html:not([data-page='settings']),
+html:not([data-page='settings']) body {
+  height: var(--app-height);
+}
+
 html[data-page='settings'],
 html[data-page='settings'] body {
   height: auto;
@@ -35,7 +50,7 @@ a {
 }
 
 .shell {
-  height: 100vh;
+  height: var(--app-height);
   display: grid;
   grid-template-columns: 320px 1fr;
   animation: shellIn 380ms ease both;
@@ -45,7 +60,7 @@ a {
 .panel {
   background: color-mix(in srgb, var(--surface) 88%, transparent);
   border-right: 1px solid var(--line);
-  height: 100vh;
+  height: var(--app-height);
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
@@ -165,6 +180,30 @@ a {
   filter: brightness(1.05);
 }
 
+.button.danger {
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--danger) 88%, #ff6a6a),
+    color-mix(in srgb, var(--danger) 68%, #9a2a2a)
+  );
+  color: #fff;
+  border-color: transparent;
+}
+
+.button.danger:hover {
+  filter: brightness(1.08);
+}
+
+.button.stop {
+  background: linear-gradient(140deg, color-mix(in srgb, var(--danger) 88%, #ff6a6a), color-mix(in srgb, var(--danger) 68%, #9a2a2a));
+  color: #fff;
+  border-color: transparent;
+}
+
+.button.stop:hover {
+  filter: brightness(1.08);
+}
+
 .small {
   font-size: 12px;
   color: var(--text-muted);
@@ -213,7 +252,7 @@ a {
 }
 
 .workspace {
-  height: 100vh;
+  height: var(--app-height);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -234,6 +273,17 @@ a {
   font-size: 18px;
 }
 
+.menu-trigger {
+  cursor: pointer;
+  user-select: none;
+}
+
+.menu-trigger:focus {
+  outline: 2px solid color-mix(in srgb, var(--primary) 70%, var(--line));
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
 .workspace-subtitle {
   margin: 4px 0 0;
   font-size: 12px;
@@ -246,7 +296,7 @@ a {
   overflow-x: hidden;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 18px;
+  padding: 18px 18px calc(34px + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -420,37 +470,70 @@ a {
 
 .message.user {
   justify-self: end;
+  align-self: flex-end;
   background: color-mix(in srgb, var(--primary) 22%, var(--surface-soft));
+  text-align: right;
+}
+
+.message.user .message-meta {
+  text-align: right;
 }
 
 .message.assistant {
   justify-self: start;
   background: var(--surface);
   position: relative;
-  overflow: hidden;
 }
 
 .message.warning {
   justify-self: start;
-  background: color-mix(in srgb, #8a5a1f 14%, var(--surface));
-  border-color: color-mix(in srgb, #d89338 60%, var(--line));
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.message.warning.error {
+  background: color-mix(in srgb, #5b1f23 24%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 68%, var(--line));
   box-shadow:
     0 16px 30px rgba(0, 0, 0, 0.35),
-    inset 0 0 0 1px color-mix(in srgb, #f1b04f 20%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.message.warning.info {
+  background: color-mix(in srgb, var(--primary) 16%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--line));
 }
 
 .warning-meta {
-  color: color-mix(in srgb, #f0c382 85%, var(--text-muted));
+  color: color-mix(in srgb, var(--text-muted) 90%, transparent);
+}
+
+.message.warning.error .warning-meta {
+  color: color-mix(in srgb, #f8a5ab 88%, var(--text-muted));
+}
+
+.message.warning.info .warning-meta {
+  color: color-mix(in srgb, var(--primary) 86%, var(--text-muted));
 }
 
 .warning-title {
   font-weight: 700;
   margin-bottom: 6px;
-  color: color-mix(in srgb, #ffd9a6 88%, var(--text));
+  color: color-mix(in srgb, var(--text) 95%, transparent);
 }
 
 .warning-content {
-  color: color-mix(in srgb, #f2d5ab 88%, var(--text));
+  color: color-mix(in srgb, var(--text) 90%, transparent);
+}
+
+.message.warning.error .warning-title,
+.message.warning.error .warning-content {
+  color: color-mix(in srgb, #ffd4d8 88%, var(--text));
+}
+
+.message.warning.info .warning-title,
+.message.warning.info .warning-content {
+  color: color-mix(in srgb, var(--text) 92%, transparent);
 }
 
 .message.typing .message-content {
@@ -490,26 +573,65 @@ a {
 }
 
 .thinking-live {
-  position: relative;
-  overflow: hidden;
-  border-color: color-mix(in srgb, var(--primary) 45%, var(--line));
-  box-shadow:
-    0 18px 32px rgba(0, 0, 0, 0.36),
-    inset 0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 6px 0;
+  max-width: min(860px, 100%);
 }
 
 .thinking-live::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    120deg,
-    transparent 0%,
-    color-mix(in srgb, var(--primary) 10%, transparent) 50%,
-    transparent 100%
-  );
-  animation: thinkingShimmer 2.2s linear infinite;
+  content: none;
+}
+
+.thinking-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  min-height: 22px;
+}
+
+.thinking-inline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 95%, white);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent);
+  animation: neuralDotPulse 1s ease-in-out infinite;
+  flex: 0 0 auto;
+}
+
+.thinking-live.error .thinking-inline-dot {
+  background: color-mix(in srgb, var(--danger) 90%, #ff7575);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 62%, transparent);
+}
+
+.thinking-inline-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--text-muted) 88%, transparent);
+}
+
+.thinking-inline-phase {
+  font-size: 13px;
+  color: color-mix(in srgb, var(--text) 95%, transparent);
+}
+
+.thinking-live.error .thinking-inline-phase {
+  color: color-mix(in srgb, #ffb1b8 88%, var(--text));
+}
+
+.thinking-inline-percent {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--primary) 82%, var(--text-muted));
+}
+
+.thinking-live.error .thinking-inline-percent {
+  color: color-mix(in srgb, var(--danger) 84%, #ffc4c8);
 }
 
 .thinking-shell {
@@ -795,14 +917,44 @@ a {
   white-space: pre-wrap;
   line-height: 1.55;
   font-size: 14px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message.assistant-flat {
+  max-width: min(860px, 100%);
+  width: min(860px, 100%);
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.message.assistant-flat.assistant-arrived::after {
+  content: none;
+}
+
+.assistant-flat-text {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  font-size: 15px;
+  color: color-mix(in srgb, var(--text) 94%, transparent);
+  margin-bottom: 8px;
+}
+
+.message.assistant-flat .code-card.compact {
+  margin: 6px 0 10px;
 }
 
 .composer {
   border-top: 1px solid var(--line);
-  padding: 14px 18px 18px;
+  padding: 14px 18px calc(18px + env(safe-area-inset-bottom, 0px));
   display: grid;
   gap: 10px;
   background: color-mix(in srgb, var(--surface) 85%, transparent);
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
 }
 
 .composer-row {
@@ -846,7 +998,7 @@ a {
 .setting-wrap {
   max-width: 860px;
   margin: 0 auto;
-  padding: 22px 18px 46px;
+  padding: 22px 18px calc(46px + env(safe-area-inset-bottom, 0px));
 }
 
 .setting-panel {
@@ -1031,6 +1183,20 @@ a {
   }
   100% {
     box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes neuralDotPulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 0 8px rgba(0, 0, 0, 0);
+    transform: scale(1.12);
   }
 }
 

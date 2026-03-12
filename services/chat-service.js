@@ -1,6 +1,6 @@
 const { AppError } = require('./errors');
 const { providers, isValidProvider, DEFAULT_PROVIDER } = require('../providers');
-const { appendMessages, getSession } = require('./project-service');
+const { appendMessages, getSession, getProject } = require('./project-service');
 
 function validateAskPayload({ provider, prompt }) {
   const normalizedProvider =
@@ -27,6 +27,7 @@ async function askProvider({ provider, prompt }) {
 
 async function askInSession({ projectId, sessionId, provider, prompt }) {
   const normalized = validateAskPayload({ provider, prompt });
+  const project = await getProject(projectId);
 
   await appendMessages(projectId, sessionId, [
     {
@@ -38,7 +39,9 @@ async function askInSession({ projectId, sessionId, provider, prompt }) {
 
   let result;
   try {
-    result = await providers[normalized.provider].ask(normalized.prompt);
+    result = await providers[normalized.provider].ask(normalized.prompt, {
+      cwd: project.projectPath,
+    });
   } catch (error) {
     throw error;
   }

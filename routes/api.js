@@ -13,6 +13,7 @@ const {
   listSessions,
   createSession,
   getSession,
+  getProject,
 } = require('../services/project-service');
 
 const router = express.Router();
@@ -159,6 +160,17 @@ router.get('/projects/:projectId/sessions', async (req, res) => {
 
 router.post('/projects/:projectId/sessions', async (req, res) => {
   try {
+    const settings = await getSettings();
+    const project = await getProject(req.params.projectId);
+
+    if (!isPathInsideRoot(project.projectPath, settings.masterProjectRoot)) {
+      throw new AppError(
+        400,
+        'Validation error',
+        'projectPath must be inside masterProjectRoot. Please change masterProjectRoot in settings.',
+      );
+    }
+
     const session = await createSession(req.params.projectId, req.body || {});
     res.status(201).json({ session });
   } catch (error) {
@@ -198,6 +210,21 @@ router.post('/projects/:projectId/sessions/:sessionId/ask', async (req, res) => 
     }
 
     handleError(res, error, 'Failed to ask in session:');
+  }
+});
+
+router.post('/restart', async (_req, res) => {
+  try {
+    res.status(200).json({
+      ok: true,
+      message: 'Server restart initiated. Ensure a process manager is running.',
+    });
+
+    setTimeout(() => {
+      process.exit(0);
+    }, 300);
+  } catch (error) {
+    handleError(res, error, 'Failed to restart server:');
   }
 });
 

@@ -1,7 +1,7 @@
 const { runCommand, escapeShellArg } = require('../utils/exec');
 
-async function ask(prompt) {
-  return runCommand(`antigravity ${escapeShellArg(prompt)}`);
+async function ask(prompt, options = {}) {
+  return runCommand(`antigravity ${escapeShellArg(prompt)}`, options);
 }
 
 module.exports = { ask };

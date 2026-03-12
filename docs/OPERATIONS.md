@@ -122,6 +122,12 @@ Verifikasi hasil scan project:
 curl http://127.0.0.1:8000/api/projects
 ```
 
+Restart server (butuh process manager seperti PM2/systemd):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/restart
+```
+
 ## 7) Troubleshooting
 
 ### A. Tidak bisa akses dari PC lain
@@ -147,6 +153,7 @@ Jika response `502`:
 - Pastikan sudah login (`codex login`).
 - Tes manual:
   - `codex exec "test"`
+  - Pastikan command dijalankan dari folder project aktif jika butuh path relatif.
 
 ### C. Session tidak muncul
 
@@ -155,6 +162,7 @@ Jika response `502`:
 - Cek API:
   - `GET /api/projects`
   - `GET /api/projects/:projectId/sessions`
+- Format `session.id`: `<folderProject>::<6-char>` (contoh `farm.asrijaya.com::a1b2c3`).
 
 ### D. Project list kosong
 

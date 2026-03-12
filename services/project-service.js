@@ -34,14 +34,54 @@ function slugifyProjectPath(value) {
     .slice(0, 70) || 'root';
 }
 
-function isSafeId(value) {
+function isSafeProjectId(value) {
   return typeof value === 'string' && /^[a-z0-9-]+(--[a-z0-9-]+)?$/i.test(value);
+}
+
+function isSafeSessionId(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const newPattern = /^[a-z0-9._-]+::[a-z0-9]{6}$/i;
+  return newPattern.test(value);
 }
 
 function makeId(prefix) {
   const stamp = Date.now().toString(36);
   const random = Math.random().toString(36).slice(2, 8);
   return `${prefix}-${stamp}-${random}`;
+}
+
+function normalizeFolderToken(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-z0-9._-]+/gi, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'project';
+}
+
+function makeSessionId(projectName) {
+  const folderToken = normalizeFolderToken(projectName);
+  let token = '';
+  while (token.length < 6) {
+    token += Math.random().toString(36).slice(2);
+  }
+  token = token.slice(0, 6);
+  return `${folderToken}::${token}`;
+}
+
+function getProjectFolderName(project) {
+  if (!project || typeof project !== 'object') {
+    return '';
+  }
+
+  if (typeof project.projectPath === 'string' && project.projectPath.trim().length > 0) {
+    return path.basename(project.projectPath.trim());
+  }
+
+  return typeof project.name === 'string' ? project.name : '';
 }
 
 function makeProjectId(name, projectPath) {
@@ -72,7 +112,7 @@ async function directoryExists(dirPath) {
 }
 
 function getProjectDir(projectId) {
-  if (!isSafeId(projectId)) {
+  if (!isSafeProjectId(projectId)) {
     throw new AppError(400, 'Validation error', 'Invalid project id.');
   }
 
@@ -100,7 +140,7 @@ function getSessionsDir(projectId) {
 }
 
 function getSessionFile(projectId, sessionId) {
-  if (!isSafeId(sessionId)) {
+  if (!isSafeSessionId(sessionId)) {
     throw new AppError(400, 'Validation error', 'Invalid session id.');
   }
 
@@ -171,6 +211,10 @@ async function listProjects(options = {}) {
     }
 
     if (!(await directoryExists(project.projectPath))) {
+      continue;
+    }
+
+    if (path.basename(project.projectPath).startsWith('.')) {
       continue;
     }
 
@@ -300,7 +344,7 @@ async function listSessions(projectId) {
     }
 
     const session = await readJson(path.join(sessionsDir, file.name), null);
-    if (session) {
+    if (session && isSafeSessionId(session.id)) {
       sessions.push({
         id: session.id,
         title: session.title,
@@ -316,11 +360,11 @@ async function listSessions(projectId) {
 }
 
 async function createSession(projectId, { title }) {
-  await getProjectOrThrow(projectId);
+  const project = await getProjectOrThrow(projectId);
 
   const normalizedTitle = typeof title === 'string' ? title.trim() : '';
   const now = new Date().toISOString();
-  const sessionId = makeId('s');
+  const sessionId = makeSessionId(getProjectFolderName(project) || project.name || projectId);
 
   const session = {
     id: sessionId,
@@ -392,6 +436,7 @@ module.exports = {
   syncProjectsFromMasterRoot,
   listSessions,
   createSession,
+  getProject: getProjectOrThrow,
   getSession,
   appendMessages,
 };

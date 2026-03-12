@@ -48,6 +48,27 @@
 
       <section class="setting-panel">
         <div class="setting-head">
+          <h2 style="margin: 0 0 6px">Session Manager</h2>
+          <p class="small" style="margin: 0">
+            Pilih project, buat session baru, lalu gunakan session itu di halaman chat.
+          </p>
+        </div>
+        <div class="cli-box">
+          <div class="row" style="margin-bottom: 10px">
+            <label class="small" for="settingsProjectSelect">Project</label>
+            <select id="settingsProjectSelect" class="select"></select>
+          </div>
+          <form id="settingsSessionForm" class="row" style="margin-bottom: 10px">
+            <label class="small" for="settingsSessionTitle">New session title (optional)</label>
+            <input id="settingsSessionTitle" class="input" placeholder="Nama sesi (opsional)" />
+            <button type="submit" class="button">Create Session</button>
+          </form>
+          <ul id="settingsSessionList" class="session-list"></ul>
+        </div>
+      </section>
+
+      <section class="setting-panel">
+        <div class="setting-head">
           <h2 style="margin: 0 0 6px">Theme</h2>
           <p class="small" style="margin: 0">Tema dibuat modular agar mudah ditambah/edit.</p>
         </div>
@@ -67,6 +88,21 @@
           <div class="code">claude --help</div>
           <div class="code">ollama list</div>
           <div class="small">Provider tersedia: <span id="providerList">-</span></div>
+        </div>
+      </section>
+
+      <section class="setting-panel">
+        <div class="setting-head">
+          <h2 style="margin: 0 0 6px">Server Control</h2>
+          <p class="small" style="margin: 0">
+            Restart server (butuh process manager seperti PM2/systemd).
+          </p>
+        </div>
+        <div class="cli-box">
+          <button id="restartServerButton" type="button" class="button danger">Restart Server</button>
+          <div class="small" style="margin-top: 8px">
+            Jika server tidak dikelola process manager, layanan bisa berhenti setelah restart.
+          </div>
         </div>
       </section>
 

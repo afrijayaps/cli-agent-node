@@ -69,13 +69,19 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
     );
   },
-  askInSession(projectId, sessionId, payload) {
+  askInSession(projectId, sessionId, payload, requestOptions = {}) {
     return request(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/ask`,
       {
         method: 'POST',
         body: JSON.stringify(payload),
+        ...requestOptions,
       },
     );
+  },
+  restartServer() {
+    return request('/api/restart', {
+      method: 'POST',
+    });
   },
 };

@@ -3,7 +3,6 @@ import { applyTheme, formatRelative } from './theme.js';
 
 const els = {
   sidePanel: document.getElementById('sidePanel'),
-  openPanelButton: document.getElementById('openPanelButton'),
   closePanelButton: document.getElementById('closePanelButton'),
   panelBackdrop: document.getElementById('panelBackdrop'),
   masterRootInputInline: document.getElementById('masterRootInputInline'),
@@ -37,51 +36,29 @@ const state = {
   activeSessionId: '',
   activeSession: null,
   awaitingAssistant: false,
-  thinkingProgress: 0,
-  thinkingPhaseIndex: 0,
-  thinkingTick: 0,
-  thinkingMetrics: {
-    tokensPerSec: 0,
-    latencyMs: 0,
-    branchCount: 0,
-    confidence: 0,
+  process: {
+    active: false,
+    label: '',
+    startedAt: 0,
+    elapsedMs: 0,
+    isError: false,
   },
-  thinkingIntervalId: null,
+  processIntervalId: null,
+  requestAbortController: null,
   assistantFlashMessageId: '',
   assistantFlashTimeoutId: null,
   chatWarning: null,
   busy: false,
 };
 
-const THINKING_PHASES = [
-  'Analyzing workspace context',
-  'Mapping dependency graph',
-  'Simulating response branches',
-  'Optimizing answer structure',
-  'Finalizing response protocol',
-];
-
-const THINKING_PIPELINE = ['Context ingest', 'Intent alignment', 'Solution drafting', 'Safety checks', 'Response shaping'];
-
-const THINKING_NOTES = [
-  'Scanning workspace vectors and prompt intent...',
-  'Resolving best-response trajectory...',
-  'Running style and relevance calibration...',
-  'Balancing brevity, depth, and safety...',
-  'Packaging final output for delivery...',
-];
-
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function updateThinkingMetrics() {
-  const progressBoost = Math.floor(state.thinkingProgress / 10);
-  state.thinkingMetrics.tokensPerSec = randomInt(26, 52) + progressBoost;
-  state.thinkingMetrics.latencyMs = randomInt(170, 520);
-  state.thinkingMetrics.branchCount = randomInt(4, 13);
-  state.thinkingMetrics.confidence = Math.min(99, randomInt(70, 84) + Math.floor(state.thinkingProgress / 4));
-}
+const PROCESS_LABELS = {
+  creating: 'Creating session',
+  sending: 'Sending prompt',
+  waiting: 'Waiting provider response',
+  persisting: 'Persisting response',
+  done: 'Response received',
+  stopped: 'Process stopped by user',
+};
 
 function scheduleAssistantFlash(messageId) {
   if (!messageId) {
@@ -124,6 +101,31 @@ function setStatus(message, isError = false, isBusy = false) {
   els.statusText.classList.toggle('busy', !isError && isBusy);
 }
 
+function updateSendButtonState() {
+  if (state.awaitingAssistant) {
+    els.sendButton.disabled = false;
+    els.sendButton.textContent = 'Stop';
+    els.sendButton.classList.add('stop');
+    return;
+  }
+
+  els.sendButton.disabled = state.busy;
+  els.sendButton.textContent = 'Send';
+  els.sendButton.classList.remove('stop');
+}
+
+function setBusy(value) {
+  state.busy = value;
+  updateSendButtonState();
+}
+
+function scrollChatToBottom() {
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  requestAnimationFrame(() => {
+    els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  });
+}
+
 function buildWarningHint(details) {
   const text = typeof details === 'string' ? details.toLowerCase() : '';
 
@@ -155,86 +157,63 @@ function buildChatWarning(error, providerFallback) {
     code,
     details,
     hint: buildWarningHint(details),
+    level: 'error',
+    title: 'Gagal mendapatkan balasan dari provider.',
     createdAt: new Date().toISOString(),
   };
 }
 
-function buildThinkingPipelineRows(progress) {
-  return THINKING_PIPELINE.map((label, index) => {
-    const point = ((index + 1) / THINKING_PIPELINE.length) * 100;
-    const done = progress >= point + 10;
-    const active = !done && progress >= point - 12;
-    const stepClass = done ? 'done' : active ? 'active' : 'pending';
-    const statusText = done ? 'synced' : active ? 'processing' : 'queued';
+function createAbortError() {
+  try {
+    return new DOMException('The operation was aborted.', 'AbortError');
+  } catch (_error) {
+    const fallback = new Error('The operation was aborted.');
+    fallback.name = 'AbortError';
+    return fallback;
+  }
+}
 
-    return `
-      <li class="pipeline-step ${stepClass}">
-        <span class="pipeline-dot"></span>
-        <span class="pipeline-label">${label}</span>
-        <span class="pipeline-status">${statusText}</span>
-      </li>
-    `;
-  }).join('');
+function isAbortError(error) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const name = typeof error.name === 'string' ? error.name.toLowerCase() : '';
+  if (name === 'aborterror') {
+    return true;
+  }
+
+  const message = typeof error.message === 'string' ? error.message.toLowerCase() : '';
+  return message.includes('aborted') || message.includes('abort');
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function getThinkingSnapshot() {
-  const phase = THINKING_PHASES[state.thinkingPhaseIndex] || THINKING_PHASES[0];
-  const progress = Math.max(1, Math.min(state.thinkingProgress, 99));
-  const note = THINKING_NOTES[(state.thinkingTick + state.thinkingPhaseIndex) % THINKING_NOTES.length];
-  const telemetry = state.thinkingMetrics;
-  const pipelineRows = buildThinkingPipelineRows(progress);
-
   return {
-    phase,
-    progress,
-    note,
-    telemetry,
-    pipelineRows,
+    label: state.process.label || PROCESS_LABELS.waiting,
+    elapsedMs: Math.max(0, state.process.elapsedMs || 0),
+    isError: !!state.process.isError,
   };
 }
 
 function renderThinkingPanel(snapshot) {
-  const { phase, progress, note, telemetry, pipelineRows } = snapshot;
+  const elapsedSec = (snapshot.elapsedMs / 1000).toFixed(1);
+  const modeClass = snapshot.isError ? 'error' : 'active';
 
   return `
-    <div class="thinking-shell">
-      <div class="thinking-grid"></div>
-      <div class="thinking-orbit" aria-hidden="true"></div>
-      <div class="thinking-title-row">
-        <div class="thinking-title">
-          <span class="signal-ring"></span>
-          SYSTEM THINKING PROCESS
-        </div>
-        <div class="thinking-percent" data-thinking="percent">${progress}% COMPLETE</div>
-      </div>
-      <div class="thinking-phase" data-thinking="phase">${phase}</div>
-      <div class="thinking-rail">
-        <span data-thinking="rail" style="width:${progress}%"></span>
-      </div>
-      <div class="thinking-telemetry">
-        <div class="metric-card">
-          <span>TOKENS/S</span>
-          <strong data-thinking="tokens">${telemetry.tokensPerSec}</strong>
-        </div>
-        <div class="metric-card">
-          <span>LATENCY</span>
-          <strong data-thinking="latency">${telemetry.latencyMs}ms</strong>
-        </div>
-        <div class="metric-card">
-          <span>BRANCHES</span>
-          <strong data-thinking="branches">${telemetry.branchCount}</strong>
-        </div>
-        <div class="metric-card">
-          <span>CONF</span>
-          <strong data-thinking="confidence">${telemetry.confidence}%</strong>
-        </div>
-      </div>
-      <ul class="thinking-pipeline" data-thinking="pipeline">${pipelineRows}</ul>
-      <div class="thinking-sub" data-thinking="note">${note}</div>
-      <div class="thinking-bars">
-        <span></span><span></span><span></span><span></span><span></span><span></span>
-        <span></span><span></span><span></span><span></span><span></span><span></span>
-      </div>
+    <div class="thinking-inline ${modeClass}" role="status" aria-live="polite">
+      <span class="thinking-inline-dot" aria-hidden="true"></span>
+      <span class="thinking-inline-label">System Neural:</span>
+      <span class="thinking-inline-phase" data-thinking="phase">${escapeHtml(snapshot.label)}</span>
+      <span class="thinking-inline-percent" data-thinking="elapsed">${elapsedSec}s</span>
     </div>
   `;
 }
@@ -246,88 +225,88 @@ function updateThinkingLivePanel() {
   }
 
   const snapshot = getThinkingSnapshot();
-  const percentEl = thinkingBox.querySelector('[data-thinking="percent"]');
+  const elapsedEl = thinkingBox.querySelector('[data-thinking="elapsed"]');
   const phaseEl = thinkingBox.querySelector('[data-thinking="phase"]');
-  const railEl = thinkingBox.querySelector('[data-thinking="rail"]');
-  const tokensEl = thinkingBox.querySelector('[data-thinking="tokens"]');
-  const latencyEl = thinkingBox.querySelector('[data-thinking="latency"]');
-  const branchesEl = thinkingBox.querySelector('[data-thinking="branches"]');
-  const confidenceEl = thinkingBox.querySelector('[data-thinking="confidence"]');
-  const pipelineEl = thinkingBox.querySelector('[data-thinking="pipeline"]');
-  const noteEl = thinkingBox.querySelector('[data-thinking="note"]');
+  thinkingBox.classList.toggle('error', snapshot.isError);
+  thinkingBox.classList.toggle('active', !snapshot.isError);
 
-  if (percentEl) {
-    percentEl.textContent = `${snapshot.progress}% COMPLETE`;
+  if (elapsedEl) {
+    elapsedEl.textContent = `${(snapshot.elapsedMs / 1000).toFixed(1)}s`;
   }
   if (phaseEl) {
-    phaseEl.textContent = snapshot.phase;
-  }
-  if (railEl) {
-    railEl.style.width = `${snapshot.progress}%`;
-  }
-  if (tokensEl) {
-    tokensEl.textContent = String(snapshot.telemetry.tokensPerSec);
-  }
-  if (latencyEl) {
-    latencyEl.textContent = `${snapshot.telemetry.latencyMs}ms`;
-  }
-  if (branchesEl) {
-    branchesEl.textContent = String(snapshot.telemetry.branchCount);
-  }
-  if (confidenceEl) {
-    confidenceEl.textContent = `${snapshot.telemetry.confidence}%`;
-  }
-  if (pipelineEl) {
-    pipelineEl.innerHTML = snapshot.pipelineRows;
-  }
-  if (noteEl) {
-    noteEl.textContent = snapshot.note;
+    phaseEl.textContent = snapshot.label;
   }
 
   return true;
 }
 
-function startThinkingAnimation() {
-  if (state.thinkingIntervalId) {
-    clearInterval(state.thinkingIntervalId);
-    state.thinkingIntervalId = null;
+function startThinkingAnimation(label = PROCESS_LABELS.waiting, isError = false) {
+  if (state.processIntervalId) {
+    clearInterval(state.processIntervalId);
+    state.processIntervalId = null;
   }
 
-  state.thinkingProgress = 12 + Math.floor(Math.random() * 6);
-  state.thinkingPhaseIndex = 0;
-  state.thinkingTick = 0;
-  updateThinkingMetrics();
+  state.process.active = true;
+  state.process.label = label;
+  state.process.isError = isError;
+  state.process.startedAt = Date.now();
+  state.process.elapsedMs = 0;
   renderMessages();
 
-  state.thinkingIntervalId = setInterval(() => {
-    if (!state.awaitingAssistant) {
+  state.processIntervalId = setInterval(() => {
+    if (!state.process.active) {
       return;
     }
 
-    state.thinkingTick += 1;
-    const step = 2 + Math.floor(Math.random() * 6);
-    state.thinkingProgress = Math.min(state.thinkingProgress + step, 96);
-
-    if (Math.random() > 0.45) {
-      state.thinkingPhaseIndex = (state.thinkingPhaseIndex + 1) % THINKING_PHASES.length;
-    }
-
-    updateThinkingMetrics();
-    const phase = THINKING_PHASES[state.thinkingPhaseIndex];
-    setStatus(`${phase} • ${state.thinkingProgress}%`, false, true);
-    if (!updateThinkingLivePanel()) {
-      renderMessages();
-    }
-  }, 520);
+    state.process.elapsedMs = Date.now() - state.process.startedAt;
+    updateThinkingLivePanel();
+  }, 200);
 }
 
-function stopThinkingAnimation() {
-  if (state.thinkingIntervalId) {
-    clearInterval(state.thinkingIntervalId);
-    state.thinkingIntervalId = null;
+function setProcessLabel(label) {
+  state.process.label = label;
+  if (state.process.active) {
+    state.process.elapsedMs = Date.now() - state.process.startedAt;
+  }
+  if (!updateThinkingLivePanel()) {
+    renderMessages();
+  }
+}
+
+function stopThinkingAnimation({ keepVisible = false, isError = false, finalLabel = '' } = {}) {
+  if (state.processIntervalId) {
+    clearInterval(state.processIntervalId);
+    state.processIntervalId = null;
   }
 
-  state.thinkingTick = 0;
+  if (keepVisible) {
+    state.process.active = true;
+    state.process.isError = isError;
+    if (finalLabel) {
+      state.process.label = finalLabel;
+    }
+    if (state.process.startedAt > 0) {
+      state.process.elapsedMs = Date.now() - state.process.startedAt;
+    }
+    renderMessages();
+    return;
+  }
+
+  state.process.active = false;
+  state.process.isError = false;
+  state.process.label = '';
+  state.process.startedAt = 0;
+  state.process.elapsedMs = 0;
+}
+
+function stopActiveRequest() {
+  if (!state.awaitingAssistant || !state.requestAbortController) {
+    return;
+  }
+
+  setProcessLabel(PROCESS_LABELS.stopped);
+  setStatus('stopping active request...', false, true);
+  state.requestAbortController.abort();
 }
 
 function renderMasterProjectRoot() {
@@ -344,6 +323,107 @@ function setMasterRootLockState(locked) {
 
 function getSelectedProject() {
   return state.projects.find((project) => project.id === state.activeProjectId) || null;
+}
+
+function extractMessageParts(text) {
+  if (typeof text !== 'string' || text.length === 0) {
+    return [];
+  }
+
+  const parts = [];
+  const pattern = /```([^\n`]*)\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index).replace(/^\n+|\n+$/g, '');
+    if (before.trim().length > 0) {
+      parts.push({ type: 'text', value: before });
+    }
+
+    const language = (match[1] || 'text').trim() || 'text';
+    const code = (match[2] || '').replace(/\n$/, '');
+    if (code.trim().length > 0) {
+      parts.push({ type: 'code', language, code });
+    }
+    lastIndex = pattern.lastIndex;
+  }
+
+  const tail = text.slice(lastIndex).replace(/^\n+|\n+$/g, '');
+  if (tail.trim().length > 0) {
+    parts.push({ type: 'text', value: tail });
+  }
+
+  if (parts.length === 0 && text.trim().length > 0) {
+    parts.push({ type: 'text', value: text.trim() });
+  }
+
+  return parts;
+}
+
+function buildAssistantMessage(message, isLatestAssistant, shouldFlash, animationDelay) {
+  const parts = extractMessageParts(message.content);
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const box = document.createElement('article');
+  box.className = `message assistant-flat enter${isLatestAssistant ? ' assistant-live' : ''}${
+    shouldFlash ? ' assistant-arrived' : ''
+  }`;
+  box.style.animationDelay = animationDelay;
+
+  const meta = document.createElement('div');
+  meta.className = 'message-meta';
+  meta.textContent = `Assistant (${message.provider || 'cli'}) • ${formatRelative(message.createdAt)}`;
+  box.appendChild(meta);
+
+  parts.forEach((part) => {
+    if (part.type === 'text') {
+      const textNode = document.createElement('div');
+      textNode.className = 'assistant-flat-text';
+      textNode.textContent = part.value;
+      box.appendChild(textNode);
+      return;
+    }
+
+    const card = document.createElement('div');
+    card.className = 'code-card compact';
+
+    const head = document.createElement('div');
+    head.className = 'code-card-head';
+
+    const label = document.createElement('span');
+    label.className = 'code-card-label';
+    label.textContent = part.language;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'code-copy';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(part.code);
+          setStatus('code copied');
+        } else {
+          throw new Error('clipboard unavailable');
+        }
+      } catch (_error) {
+        setStatus('failed to copy code', true);
+      }
+    });
+
+    head.append(label, copyBtn);
+
+    const pre = document.createElement('pre');
+    pre.textContent = part.code;
+
+    card.append(head, pre);
+    box.appendChild(card);
+  });
+
+  return box;
 }
 
 function renderProjectSelect() {
@@ -402,54 +482,78 @@ function renderHeader() {
 
   els.activeProjectName.textContent = project ? project.name : 'No project selected';
   els.activeSessionName.textContent = session
-    ? `${session.title} • ${session.messages.length} messages`
+    ? `${session.title} • ${session.id} • ${session.messages.length} messages`
     : 'Create session to start chatting.';
 
   els.projectPathLabel.textContent = project ? project.projectPath : '-';
+  updatePromptPlaceholder();
+}
+
+function updatePromptPlaceholder() {
+  if (!els.promptInput) {
+    return;
+  }
+
+  if (state.activeSessionId) {
+    els.promptInput.placeholder = `Session: ${state.activeSessionId} | Tulis prompt...`;
+    return;
+  }
+
+  els.promptInput.placeholder = 'Tulis prompt...';
 }
 
 function renderMessages() {
   const session = state.activeSession;
   const hasMessages = session && Array.isArray(session.messages) && session.messages.length > 0;
   const hasWarning = !!state.chatWarning;
+  const hasProcess = state.process.active || state.process.isError;
 
   els.chatLog.innerHTML = '';
 
-  if (!hasMessages && !hasWarning) {
+  if (!hasMessages && !hasWarning && !hasProcess) {
     els.chatLog.appendChild(els.emptyState);
     return;
   }
 
-  session.messages.forEach((message, index) => {
-    const isLatestAssistant =
-      message.role === 'assistant' && index === session.messages.length - 1 && !state.awaitingAssistant;
-    const shouldFlash = message.role === 'assistant' && message.id && message.id === state.assistantFlashMessageId;
+  if (hasMessages) {
+    session.messages.forEach((message, index) => {
+      const isLatestAssistant =
+        message.role === 'assistant' && index === session.messages.length - 1 && !state.awaitingAssistant;
+      const shouldFlash = message.role === 'assistant' && message.id && message.id === state.assistantFlashMessageId;
+      const animationDelay = `${Math.min(index * 32, 160)}ms`;
+
+      if (message.role === 'assistant') {
+        const assistantMessage = buildAssistantMessage(message, isLatestAssistant, shouldFlash, animationDelay);
+        if (assistantMessage) {
+          els.chatLog.appendChild(assistantMessage);
+        }
+        return;
+      }
+
+      const box = document.createElement('article');
+      box.className = `message enter user${shouldFlash ? ' assistant-arrived' : ''}`;
+      box.style.animationDelay = animationDelay;
+
+      const meta = document.createElement('div');
+      meta.className = 'message-meta';
+      meta.textContent = `You • ${formatRelative(message.createdAt)}`;
+
+      const content = document.createElement('div');
+      content.className = 'message-content';
+      content.textContent = message.content;
+
+      box.append(meta, content);
+      els.chatLog.appendChild(box);
+    });
+  }
+
+  if (hasProcess) {
     const box = document.createElement('article');
-    box.className = `message enter ${message.role === 'user' ? 'user' : 'assistant'}${
-      isLatestAssistant ? ' assistant-live' : ''
-    }${shouldFlash ? ' assistant-arrived' : ''}`;
-    box.style.animationDelay = `${Math.min(index * 32, 160)}ms`;
+    box.className = `message assistant typing enter thinking-live${state.process.isError ? ' error' : ' active'}`;
 
     const meta = document.createElement('div');
     meta.className = 'message-meta';
-    const label = message.role === 'user' ? 'You' : `Assistant (${message.provider || 'cli'})`;
-    meta.textContent = `${label} • ${formatRelative(message.createdAt)}`;
-
-    const content = document.createElement('div');
-    content.className = 'message-content';
-    content.textContent = message.content;
-
-    box.append(meta, content);
-    els.chatLog.appendChild(box);
-  });
-
-  if (state.awaitingAssistant) {
-    const box = document.createElement('article');
-    box.className = 'message assistant typing enter thinking-live';
-
-    const meta = document.createElement('div');
-    meta.className = 'message-meta';
-    meta.textContent = `Assistant (${els.providerSelect.value || state.defaultProvider}) • neural process online`;
+    meta.textContent = `Process (${els.providerSelect.value || state.defaultProvider})`;
 
     const content = document.createElement('div');
     content.className = 'message-content';
@@ -462,7 +566,8 @@ function renderMessages() {
   if (state.chatWarning) {
     const warning = state.chatWarning;
     const warningBox = document.createElement('article');
-    warningBox.className = 'message warning enter';
+    const level = warning.level === 'info' ? 'info' : 'error';
+    warningBox.className = `message warning ${level} enter`;
 
     const meta = document.createElement('div');
     meta.className = 'message-meta warning-meta';
@@ -470,7 +575,7 @@ function renderMessages() {
 
     const title = document.createElement('div');
     title.className = 'warning-title';
-    title.textContent = 'Gagal mendapatkan balasan dari provider.';
+    title.textContent = warning.title || 'Terjadi masalah pada proses.';
 
     const content = document.createElement('div');
     content.className = 'message-content warning-content';
@@ -487,7 +592,7 @@ function renderMessages() {
     els.chatLog.appendChild(warningBox);
   }
 
-  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  scrollChatToBottom();
 }
 
 async function loadMetaAndSettings() {
@@ -605,7 +710,7 @@ async function createSession(event) {
 
   const title = els.sessionTitle.value.trim();
 
-  state.busy = true;
+  setBusy(true);
   setStatus('creating session...', false, true);
 
   try {
@@ -615,11 +720,13 @@ async function createSession(event) {
     els.sessionTitle.value = '';
 
     await loadSessions(state.activeProjectId);
-    setStatus('session created');
+    const project = getSelectedProject();
+    const projectPath = project && project.projectPath ? project.projectPath : '-';
+    setStatus(`session created: ${state.activeSessionId} | path: ${projectPath}`);
   } catch (error) {
     setStatus(error.message || 'failed to create session', true);
   } finally {
-    state.busy = false;
+    setBusy(false);
   }
 }
 
@@ -628,16 +735,16 @@ async function ensureSessionForPrompt(prompt) {
     return state.activeSessionId;
   }
 
-  const title = prompt.split('\n')[0].slice(0, 48) || 'New Session';
-  const data = await api.createSession(state.activeProjectId, { title });
-  state.activeSessionId = data.session.id;
-  localStorage.setItem(`activeSessionId:${state.activeProjectId}`, state.activeSessionId);
-  await loadSessions(state.activeProjectId);
-  return state.activeSessionId;
+  throw new Error('create session in Settings first');
 }
 
 async function sendPrompt(event) {
   event.preventDefault();
+
+  if (state.awaitingAssistant) {
+    stopActiveRequest();
+    return;
+  }
 
   const prompt = els.promptInput.value.trim();
   const provider = els.providerSelect.value;
@@ -657,17 +764,31 @@ async function sendPrompt(event) {
     return;
   }
 
+  if (!state.activeSessionId) {
+    setStatus('buat session dulu di panel kiri', true);
+    return;
+  }
+
   if (state.busy) {
     return;
   }
 
   state.chatWarning = null;
-  state.busy = true;
-  els.sendButton.disabled = true;
-  setStatus('neural pipeline warming up...', false, true);
+  setBusy(true);
+  state.awaitingAssistant = true;
+  updateSendButtonState();
+  setStatus('neural pipeline active...', false, true);
+  startThinkingAnimation(PROCESS_LABELS.creating);
 
   try {
+    const controller = new AbortController();
+    state.requestAbortController = controller;
+
     const sessionId = await ensureSessionForPrompt(prompt);
+    if (controller.signal.aborted) {
+      throw createAbortError();
+    }
+    setProcessLabel(PROCESS_LABELS.sending);
     const optimisticMessage = {
       id: `temp-${Date.now().toString(36)}`,
       role: 'user',
@@ -689,17 +810,23 @@ async function sendPrompt(event) {
     }
 
     state.activeSession.messages.push(optimisticMessage);
-    state.awaitingAssistant = true;
-    startThinkingAnimation();
     renderHeader();
+    renderMessages();
+    setProcessLabel(PROCESS_LABELS.waiting);
 
-    const data = await api.askInSession(state.activeProjectId, sessionId, { prompt, provider });
-    state.awaitingAssistant = false;
-    stopThinkingAnimation();
+    const data = await api.askInSession(
+      state.activeProjectId,
+      sessionId,
+      { prompt, provider },
+      { signal: controller.signal },
+    );
+    state.requestAbortController = null;
+    setProcessLabel(PROCESS_LABELS.persisting);
     state.activeSession = data.session;
     els.promptInput.value = '';
 
     await loadSessions(state.activeProjectId);
+    stopThinkingAnimation();
     state.chatWarning = null;
     if (typeof data.result !== 'string' || data.result.trim().length === 0) {
       state.chatWarning = {
@@ -707,6 +834,8 @@ async function sendPrompt(event) {
         code: null,
         details: 'Provider tidak mengembalikan teks balasan.',
         hint: 'Ulangi prompt atau cek login/status CLI provider di server.',
+        level: 'error',
+        title: 'Provider selesai, tapi tanpa konten balasan.',
         createdAt: new Date().toISOString(),
       };
     }
@@ -716,8 +845,9 @@ async function sendPrompt(event) {
     scheduleAssistantFlash(latestAssistant && latestAssistant.id ? latestAssistant.id : '');
     setStatus('response received');
   } catch (error) {
-    state.awaitingAssistant = false;
-    stopThinkingAnimation();
+    state.requestAbortController = null;
+    const aborted = isAbortError(error);
+
     if (state.activeProjectId && state.activeSessionId) {
       try {
         await onSessionSelect(state.activeSessionId);
@@ -725,16 +855,40 @@ async function sendPrompt(event) {
         // Keep current local state when refresh fails.
       }
     }
-    state.chatWarning = buildChatWarning(error, provider);
-    renderMessages();
-    setStatus(error.message || 'request failed', true);
+
+    if (aborted) {
+      stopThinkingAnimation();
+      state.chatWarning = {
+        provider,
+        code: null,
+        details: 'Permintaan dihentikan oleh pengguna.',
+        hint: 'Kirim prompt lagi jika ingin melanjutkan.',
+        level: 'info',
+        title: 'Proses dihentikan.',
+        createdAt: new Date().toISOString(),
+      };
+      setStatus('request stopped');
+    } else {
+      state.chatWarning = buildChatWarning(error, provider);
+      stopThinkingAnimation({
+        keepVisible: true,
+        isError: true,
+        finalLabel:
+          state.chatWarning.code !== null
+            ? `Provider error (code ${state.chatWarning.code})`
+            : 'Provider error',
+      });
+      setStatus(error.message || 'request failed', true);
+    }
   } finally {
-    state.busy = false;
     state.awaitingAssistant = false;
-    stopThinkingAnimation();
-    els.sendButton.disabled = false;
+    setBusy(false);
+    if (!state.process.isError) {
+      stopThinkingAnimation();
+    }
     renderHeader();
     renderMessages();
+    updateSendButtonState();
   }
 }
 
@@ -755,10 +909,6 @@ async function onProjectSelectChange() {
 
   await loadSessions(state.activeProjectId);
   renderHeader();
-
-  if (isMobileViewport()) {
-    closeMobilePanel();
-  }
 }
 
 async function refreshProjects() {
@@ -766,7 +916,7 @@ async function refreshProjects() {
     return;
   }
 
-  state.busy = true;
+  setBusy(true);
   setStatus('refreshing project folders...', false, true);
 
   try {
@@ -775,7 +925,7 @@ async function refreshProjects() {
   } catch (error) {
     setStatus(error.message || 'failed to refresh project list', true);
   } finally {
-    state.busy = false;
+    setBusy(false);
   }
 }
 
@@ -795,7 +945,7 @@ async function saveMasterRootFromInline() {
     return;
   }
 
-  state.busy = true;
+  setBusy(true);
   els.saveRootButton.disabled = true;
   els.editRootButton.disabled = true;
   setStatus('menyimpan project source root...', false, true);
@@ -810,7 +960,7 @@ async function saveMasterRootFromInline() {
   } catch (error) {
     setStatus(error.message || 'gagal simpan project source root', true);
   } finally {
-    state.busy = false;
+    setBusy(false);
     els.editRootButton.disabled = false;
     els.saveRootButton.disabled = state.masterRootLocked;
   }
@@ -853,19 +1003,31 @@ async function init() {
     setStatus(error.message || 'failed to load app', true);
   }
 
-  els.sessionForm.addEventListener('submit', createSession);
+  updateSendButtonState();
+
+  if (els.sessionForm) {
+    els.sessionForm.addEventListener('submit', createSession);
+  }
   els.askForm.addEventListener('submit', sendPrompt);
   els.projectSelect.addEventListener('change', onProjectSelectChange);
   els.refreshProjectsButton.addEventListener('click', refreshProjects);
   els.saveRootButton.addEventListener('click', saveMasterRootFromInline);
   els.editRootButton.addEventListener('click', toggleMasterRootEdit);
+  if (els.activeProjectName) {
+    els.activeProjectName.addEventListener('click', openMobilePanel);
+    els.activeProjectName.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openMobilePanel();
+      }
+    });
+  }
   els.masterRootInputInline.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
       saveMasterRootFromInline();
     }
   });
-  els.openPanelButton.addEventListener('click', openMobilePanel);
   els.closePanelButton.addEventListener('click', closeMobilePanel);
   els.panelBackdrop.addEventListener('click', closeMobilePanel);
   window.addEventListener('resize', handleWindowResize);

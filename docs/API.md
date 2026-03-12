@@ -196,6 +196,15 @@ Success `201`:
 }
 ```
 
+Error `400` (project di luar master root):
+
+```json
+{
+  "error": "Validation error",
+  "details": "projectPath must be inside masterProjectRoot. Please change masterProjectRoot in settings."
+}
+```
+
 Validation error `400`, duplicate `409`.
 
 Catatan:
@@ -213,7 +222,7 @@ Success `200`:
 {
   "sessions": [
     {
-      "id": "s-mmnjij4b-b4olx1",
+      "id": "farm.asrijaya.com::a1b2c3",
       "title": "First persistent chat",
       "createdAt": "2026-03-12T14:05:20.843Z",
       "updatedAt": "2026-03-12T14:05:20.870Z",
@@ -233,12 +242,15 @@ Request:
 
 `title` opsional.
 
+Format `session.id`:
+- `<folderProject>::<6-char>` (contoh: `farm.asrijaya.com::a1b2c3`), `folderProject` diambil dari nama folder project aktif.
+
 Success `201`:
 
 ```json
 {
   "session": {
-    "id": "s-xxxx",
+    "id": "farm.asrijaya.com::a1b2c3",
     "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
     "title": "Diskusi fitur tema",
     "createdAt": "2026-03-12T14:05:20.843Z",
@@ -255,7 +267,7 @@ Success `200`:
 ```json
 {
   "session": {
-    "id": "s-xxxx",
+    "id": "farm.asrijaya.com::a1b2c3",
     "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
     "title": "Diskusi fitur tema",
     "createdAt": "2026-03-12T14:05:20.843Z",
@@ -290,6 +302,7 @@ Catatan:
 
 - `provider` opsional, default `codex`.
 - Message user akan tetap disimpan ke session walaupun provider gagal.
+- Request ini menjalankan CLI provider dengan `cwd` di folder project aktif (`project.projectPath`).
 
 Success `200`:
 
@@ -297,7 +310,7 @@ Success `200`:
 {
   "result": "siap",
   "session": {
-    "id": "s-xxxx",
+    "id": "farm.asrijaya.com::a1b2c3",
     "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
     "title": "Diskusi fitur tema",
     "createdAt": "2026-03-12T14:05:20.843Z",
@@ -308,3 +321,18 @@ Success `200`:
 ```
 
 CLI failure `502`, validation `400`, not found `404`, internal `500`.
+
+## 8) Server Control
+
+### `POST /api/restart`
+
+Meminta server restart (butuh process manager seperti PM2/systemd untuk auto-restart).
+
+Success `200`:
+
+```json
+{
+  "ok": true,
+  "message": "Server restart initiated. Ensure a process manager is running."
+}
+```

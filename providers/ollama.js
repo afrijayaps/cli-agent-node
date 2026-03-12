@@ -1,7 +1,7 @@
 const { runCommand, escapeShellArg } = require('../utils/exec');
 
-async function ask(prompt) {
-  return runCommand(`ollama run deepseek-coder ${escapeShellArg(prompt)}`);
+async function ask(prompt, options = {}) {
+  return runCommand(`ollama run deepseek-coder ${escapeShellArg(prompt)}`, options);
 }
 
 module.exports = { ask };
