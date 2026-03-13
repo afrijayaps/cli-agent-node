@@ -225,35 +225,34 @@ async function listProjects(options = {}) {
   await ensureDir(PROJECTS_DIR);
 
   const levelOne = await fs.readdir(PROJECTS_DIR, { withFileTypes: true });
-  const projects = [];
+  const nameDirs = levelOne.filter((d) => d.isDirectory());
 
-  for (const nameDir of levelOne) {
-    if (!nameDir.isDirectory()) {
-      continue;
-    }
-
-    const namePath = path.join(PROJECTS_DIR, nameDir.name);
-    const legacyProjectFile = path.join(namePath, PROJECT_FILE);
-    const legacyProject = await readJson(legacyProjectFile, null);
-    if (legacyProject) {
-      projects.push(await ensureProjectNameSynced(legacyProject, legacyProjectFile));
-      continue;
-    }
-
-    const levelTwo = await fs.readdir(namePath, { withFileTypes: true });
-
-    for (const pathDir of levelTwo) {
-      if (!pathDir.isDirectory()) {
-        continue;
+  const projectResults = await Promise.all(
+    nameDirs.map(async (nameDir) => {
+      const namePath = path.join(PROJECTS_DIR, nameDir.name);
+      const legacyProjectFile = path.join(namePath, PROJECT_FILE);
+      const legacyProject = await readJson(legacyProjectFile, null);
+      if (legacyProject) {
+        return [await ensureProjectNameSynced(legacyProject, legacyProjectFile)];
       }
 
-      const projectFile = path.join(namePath, pathDir.name, PROJECT_FILE);
-      const project = await readJson(projectFile, null);
-      if (project) {
-        projects.push(await ensureProjectNameSynced(project, projectFile));
-      }
-    }
-  }
+      const levelTwo = await fs.readdir(namePath, { withFileTypes: true });
+      const pathDirs = levelTwo.filter((d) => d.isDirectory());
+
+      return Promise.all(
+        pathDirs.map(async (pathDir) => {
+          const projectFile = path.join(namePath, pathDir.name, PROJECT_FILE);
+          const project = await readJson(projectFile, null);
+          if (project) {
+            return ensureProjectNameSynced(project, projectFile);
+          }
+          return null;
+        }),
+      ).then((results) => results.filter(Boolean));
+    }),
+  );
+
+  const projects = projectResults.flat();
 
   projects.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
@@ -261,25 +260,17 @@ async function listProjects(options = {}) {
     return projects;
   }
 
-  const filtered = [];
+  const validProjects = projects.filter(
+    (project) =>
+      typeof project.projectPath === 'string' &&
+      isPathInsideRoot(project.projectPath, masterProjectRoot),
+  );
 
-  for (const project of projects) {
-    if (typeof project.projectPath !== 'string') {
-      continue;
-    }
+  const existChecks = await Promise.all(
+    validProjects.map((project) => directoryExists(project.projectPath)),
+  );
 
-    if (!isPathInsideRoot(project.projectPath, masterProjectRoot)) {
-      continue;
-    }
-
-    if (!(await directoryExists(project.projectPath))) {
-      continue;
-    }
-
-    filtered.push(project);
-  }
-
-  return filtered;
+  return validProjects.filter((_, i) => existChecks[i]);
 }
 
 async function upsertProjectRecord({ name, projectPath, failIfExists = false }) {
@@ -331,6 +322,9 @@ async function createProject({ name, projectPath }) {
   return upsertProjectRecord({ name, projectPath, failIfExists: true });
 }
 
+const syncCache = new Map(); // normalizedRoot → { ts, promise }
+const SYNC_CACHE_TTL_MS = 5000;
+
 async function syncProjectsFromMasterRoot(masterProjectRoot) {
   const normalizedRoot = typeof masterProjectRoot === 'string' ? path.resolve(masterProjectRoot.trim()) : '';
 
@@ -338,42 +332,50 @@ async function syncProjectsFromMasterRoot(masterProjectRoot) {
     throw new AppError(400, 'Validation error', 'masterProjectRoot is required.');
   }
 
-  let stat;
-  try {
-    stat = await fs.stat(normalizedRoot);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      throw new AppError(400, 'Validation error', 'masterProjectRoot does not exist.');
-    }
-
-    throw error;
+  // Return cached result if last sync was within TTL
+  const cached = syncCache.get(normalizedRoot);
+  if (cached && Date.now() - cached.ts < SYNC_CACHE_TTL_MS) {
+    return cached.promise;
   }
 
-  if (!stat.isDirectory()) {
-    throw new AppError(400, 'Validation error', 'masterProjectRoot must be a directory.');
-  }
+  const promise = (async () => {
+    let stat;
+    try {
+      stat = await fs.stat(normalizedRoot);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new AppError(400, 'Validation error', 'masterProjectRoot does not exist.');
+      }
 
-  const entries = await fs.readdir(normalizedRoot, { withFileTypes: true });
-  const synced = [];
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
+      throw error;
     }
 
-    const projectPath = path.join(normalizedRoot, entry.name);
-    const project = await upsertProjectRecord({
-      name: entry.name,
-      projectPath,
-      failIfExists: false,
-    });
-
-    if (project) {
-      synced.push(project);
+    if (!stat.isDirectory()) {
+      throw new AppError(400, 'Validation error', 'masterProjectRoot must be a directory.');
     }
-  }
 
-  return synced;
+    const entries = await fs.readdir(normalizedRoot, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory());
+
+    const results = await Promise.all(
+      dirs.map((entry) =>
+        upsertProjectRecord({
+          name: entry.name,
+          projectPath: path.join(normalizedRoot, entry.name),
+          failIfExists: false,
+        }).catch(() => null),
+      ),
+    );
+
+    return results.filter(Boolean);
+  })();
+
+  syncCache.set(normalizedRoot, { ts: Date.now(), promise });
+
+  // On failure, remove from cache so next request retries
+  promise.catch(() => syncCache.delete(normalizedRoot));
+
+  return promise;
 }
 
 async function touchProject(projectId) {
@@ -390,25 +392,25 @@ async function listSessions(projectId) {
   await ensureDir(sessionsDir);
 
   const files = await fs.readdir(sessionsDir, { withFileTypes: true });
-  const sessions = [];
+  const jsonFiles = files.filter((f) => f.isFile() && f.name.endsWith('.json'));
 
-  for (const file of files) {
-    if (!file.isFile() || !file.name.endsWith('.json')) {
-      continue;
-    }
+  const results = await Promise.all(
+    jsonFiles.map(async (file) => {
+      const session = await readJson(path.join(sessionsDir, file.name), null);
+      if (session && isSafeSessionId(session.id)) {
+        return {
+          id: session.id,
+          title: session.title,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
+        };
+      }
+      return null;
+    }),
+  );
 
-    const session = await readJson(path.join(sessionsDir, file.name), null);
-    if (session && isSafeSessionId(session.id)) {
-      sessions.push({
-        id: session.id,
-        title: session.title,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
-      });
-    }
-  }
-
+  const sessions = results.filter(Boolean);
   sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   return sessions;
 }
@@ -534,6 +536,38 @@ async function appendMessages(projectId, sessionId, messages) {
   return session;
 }
 
+async function undoLastTurn(projectId, sessionId) {
+  const session = await getSession(projectId, sessionId);
+  if (!Array.isArray(session.messages) || session.messages.length === 0) {
+    throw new AppError(400, 'Validation error', 'Session tidak punya pesan untuk di-undo.');
+  }
+
+  let removeCount = 0;
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index];
+    removeCount += 1;
+    if (message && message.role === 'user') {
+      break;
+    }
+  }
+
+  const targetIndex = session.messages.length - removeCount;
+  const targetMessage = session.messages[targetIndex];
+  if (!targetMessage || targetMessage.role !== 'user') {
+    throw new AppError(400, 'Validation error', 'Undo hanya tersedia untuk giliran chat terakhir.');
+  }
+
+  session.messages.splice(targetIndex, removeCount);
+  session.updatedAt = new Date().toISOString();
+  await writeJson(getSessionFile(projectId, sessionId), session);
+  await touchProject(projectId);
+
+  return {
+    session,
+    removedCount: removeCount,
+  };
+}
+
 async function setSessionPreferences(projectId, sessionId, nextPreferences) {
   const session = await getSession(projectId, sessionId);
   session.preferences = normalizeSessionPreferences({
@@ -557,5 +591,6 @@ module.exports = {
   getProject: getProjectOrThrow,
   getSession,
   appendMessages,
+  undoLastTurn,
   setSessionPreferences,
 };

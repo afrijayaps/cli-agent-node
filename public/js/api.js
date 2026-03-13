@@ -94,6 +94,14 @@ export const api = {
       },
     );
   },
+  undoSession(projectId, sessionId) {
+    return request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/undo`,
+      {
+        method: 'POST',
+      },
+    );
+  },
   askInSession(projectId, sessionId, payload, requestOptions = {}) {
     return request(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/ask`,

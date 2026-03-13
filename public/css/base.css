@@ -304,6 +304,7 @@ a {
   background: #f2c14e;
   box-shadow: 0 0 0 3px color-mix(in srgb, #f2c14e 22%, transparent);
   animation: sessionRuntimePulse 1150ms ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .session-runtime.error {
@@ -541,6 +542,7 @@ a {
   width: 38%;
   background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 80%, transparent), var(--primary));
   animation: thinkingSweep 1.4s ease-in-out infinite;
+  will-change: transform;
 }
 
 .thinking-note {
@@ -764,8 +766,8 @@ a {
   height: 5px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--text-muted) 80%, transparent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent);
   animation: neuralDotPulse 1s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .process-text {
@@ -886,16 +888,29 @@ a {
 }
 
 .signal-ring {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--primary);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent);
+}
+
+.signal-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 60%, transparent);
   animation: signalPulse 1.6s ease-out infinite;
+  will-change: transform, opacity;
 }
 
 .thinking-shell.error .signal-ring {
   background: color-mix(in srgb, var(--danger) 85%, #ff6a6a);
+}
+
+.thinking-shell.error .signal-ring::after {
+  background: color-mix(in srgb, var(--danger) 60%, transparent);
 }
 
 .thinking-percent {
@@ -999,6 +1014,7 @@ a {
 }
 
 .pipeline-dot {
+  position: relative;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1024,7 +1040,16 @@ a {
 
 .pipeline-step.active .pipeline-dot {
   background: color-mix(in srgb, var(--primary) 85%, white);
+}
+
+.pipeline-step.active .pipeline-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 60%, transparent);
   animation: signalPulse 1.2s ease-out infinite;
+  will-change: transform, opacity;
 }
 
 .pipeline-step.active .pipeline-status {
@@ -1285,6 +1310,54 @@ a {
   z-index: 5;
 }
 
+/* Composer auto-collapse */
+.composer-input {
+  transition: max-height 220ms ease, min-height 220ms ease, padding 220ms ease, opacity 160ms ease;
+}
+
+.composer-chips {
+  overflow: hidden;
+  max-height: 40px;
+  transition: max-height 200ms ease, opacity 160ms ease;
+}
+
+.status-row {
+  overflow: hidden;
+  max-height: 40px;
+  transition: max-height 200ms ease, opacity 160ms ease;
+}
+
+.composer--collapsed .status-row {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.composer--collapsed .composer-chips {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.composer--collapsed .composer-box {
+  cursor: text;
+}
+
+.composer--collapsed .composer-actions {
+  margin-top: 0;
+}
+
+.composer--collapsed .composer-input {
+  min-height: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+
 .process-inline {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1377,15 +1450,32 @@ a {
   border-radius: 12px;
   background: var(--surface-soft);
   padding: 10px;
+  overflow: hidden;
+  min-height: 52px;
 }
 
 .composer-actions {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: inline-flex;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.composer-chips {
+  display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.composer-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .chip-select {
@@ -1493,15 +1583,15 @@ a {
 }
 
 .chip-icon.icon-model {
-  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='6' y='6' width='12' height='12' rx='2'/%3E%3Cpath d='M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3'/%3E%3C/svg%3E");
+  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/%3E%3C/svg%3E");
 }
 
 .chip-icon.icon-reasoning {
-  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 3c-3 0-5 2.2-5 5 0 2 1 3.6 2.8 4.4-.4 1.7.6 3.4 2.2 3.9h6c1.8 0 3.2-1.4 3.2-3.2 0-1.3-.7-2.4-1.9-3 1.1-3-1.2-7.1-5.3-7.1-1 0-2 .3-2.9.9'/%3E%3Cpath d='M9.5 10.5h5M9.5 13.5h3'/%3E%3C/svg%3E");
+  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 21h6'/%3E%3Cpath d='M12 2a7 7 0 0 1 5 11.9V17H7v-3.1A7 7 0 0 1 12 2z'/%3E%3C/svg%3E");
 }
 
 .chip-icon.icon-mode {
-  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h16M4 12h16M4 17h16'/%3E%3Ccircle cx='9' cy='7' r='2.2'/%3E%3Ccircle cx='15' cy='12' r='2.2'/%3E%3Ccircle cx='7' cy='17' r='2.2'/%3E%3C/svg%3E");
+  --chip-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2L2 7l10 5 10-5-10-5z'/%3E%3Cpath d='M2 12l10 5 10-5'/%3E%3Cpath d='M2 17l10 5 10-5'/%3E%3C/svg%3E");
 }
 
 
@@ -1509,7 +1599,7 @@ a {
   width: 100%;
   border: none;
   background: transparent;
-  padding: 8px 96px 48px 4px;
+  padding: 8px 8px 8px 4px;
   min-height: 104px;
   max-height: 200px;
   resize: vertical;
@@ -1524,31 +1614,29 @@ a {
   box-shadow: none;
 }
 
-.send-inline {
-  width: auto;
-  min-width: 42px;
-  height: 42px;
+.send-inline,
+.undo-inline,
+.stop-inline {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
   padding: 0;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
-.send-inline:active {
-  transform: scale(0.96);
+.send-inline:active,
+.undo-inline:active,
+.stop-inline:active {
+  transform: scale(0.93);
 }
 
 .stop-inline {
-  width: auto;
-  min-width: 52px;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 1;
   background: linear-gradient(
     140deg,
     color-mix(in srgb, var(--danger) 88%, #ff6a6a),
@@ -1566,21 +1654,8 @@ a {
   transform: scale(0.96);
 }
 
-.composer-controls-bottom {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-
-.composer-controls-bottom::-webkit-scrollbar {
-  height: 6px;
-}
-
-.composer-controls-bottom::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--primary) 28%, var(--line));
-  border-radius: 999px;
+.composer-chips::-webkit-scrollbar {
+  height: 0;
 }
 
 .composer-row {
@@ -1868,13 +1943,16 @@ a {
 
 @keyframes signalPulse {
   0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 56%, transparent);
+    transform: scale(1);
+    opacity: 1;
   }
   70% {
-    box-shadow: 0 0 0 8px rgba(0, 0, 0, 0);
+    transform: scale(2.8);
+    opacity: 0;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+    transform: scale(1);
+    opacity: 0;
   }
 }
 
@@ -1882,12 +1960,10 @@ a {
   0%,
   100% {
     opacity: 0.55;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
     transform: scale(1);
   }
   50% {
     opacity: 1;
-    box-shadow: 0 0 0 8px rgba(0, 0, 0, 0);
     transform: scale(1.12);
   }
 }
@@ -1917,11 +1993,11 @@ a {
 
 @keyframes processExit {
   0% {
-    clip-path: inset(0 0 0 0);
+    transform: scaleY(1);
     opacity: 1;
   }
   100% {
-    clip-path: inset(100% 0 0 0);
+    transform: scaleY(0);
     opacity: 0;
   }
 }
@@ -2029,19 +2105,11 @@ a {
     margin-bottom: 2px;
   }
 
-  .composer-actions {
-    position: static;
-    display: flex;
-    width: 100%;
-    justify-content: flex-end;
-    margin-top: 8px;
-  }
-
   .composer-input {
     padding: 8px 4px;
   }
 
-  .composer-controls-bottom {
+  .composer-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
     padding-bottom: 2px;

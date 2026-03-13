@@ -82,6 +82,8 @@ Dokumentasi ini dipakai banyak agent untuk mencatat status task beserta keterang
 | T-040 | Tambah reverse proxy nginx untuk akses via Tailscale IP | codex | done | medium | 2026-03-13 | 2026-03-13 | Dibatalkan: vhost Tailscale dihapus sesuai permintaan |
 | T-041 | Cegah job ganda untuk prompt identik | codex | done | medium | 2026-03-13 | 2026-03-13 | Dedupe backend + UI queue/inflight |
 | T-042 | Antrian per sesi paralel + status proses pulih dari jobs | codex | done | medium | 2026-03-13 | 2026-03-13 | Per-sesi serial, antar sesi paralel, sync proses dari `/api/jobs` |
+| T-043 | Tambah file dummy untuk uji undo | codex | done | low | 2026-03-13 | 2026-03-13 | Buat 6 file di `tmp-test/` |
+| T-044 | Isi ulang file tmp-test dengan konten acak | codex | done | low | 2026-03-13 | 2026-03-13 | Overwrite 6 file dengan `random: <token>` |
 | T-042 | Perbaiki fallback path auth Codex saat `CODEX_HOME` menunjuk ke `.codex` | codex | done | medium | 2026-03-13 | 2026-03-13 | Cek multi-kandidat path auth.json agar status login tidak false logged_out |
 | T-043 | Perbaiki session list berkedip saat polling jobs | codex | done | medium | 2026-03-13 | 2026-03-13 | Update status runtime session langsung di DOM tanpa rerender seluruh list tiap polling |
 | T-044 | Fallback status login Codex saat cek `/status` timeout | codex | done | medium | 2026-03-13 | 2026-03-13 | Timeout cek CLI tidak lagi tampil error; fallback baca `auth.json` + timeout dinaikkan ke 15 detik |
@@ -90,6 +92,17 @@ Dokumentasi ini dipakai banyak agent untuk mencatat status task beserta keterang
 | T-047 | Audit bottleneck performa dan glitch UI website | codex | review | high | 2026-03-13 | 2026-03-13 | Audit selesai: temuan utama di rerender chat penuh, polling project/session yang mahal, parsing markdown DOM-heavy, dan animasi CSS terus-menerus |
 | T-048 | Tambah cache render pesan chat untuk kurangi rerender berat | codex | done | high | 2026-03-13 | 2026-03-13 | Cache parts, HTML markdown, dan template DOM pesan agar rebuild chat besar tidak parse/render ulang dari nol |
 | T-049 | Virtualisasi chat list untuk session panjang | codex | done | high | 2026-03-13 | 2026-03-13 | Initial render dibatasi 80 pesan terakhir, scroll atas load batch 50 pesan lebih lama, dan DOM+scroll cache per-session disimpan di `app.js` agar switch session lebih ringan |
+| T-050 | Cegah shortcut undo/redo memicu popup di input chat | codex | done | medium | 2026-03-13 | 2026-03-13 | Tambah guard modifier key di submit Enter dan stop propagation untuk `historyUndo/historyRedo` pada prompt |
+| T-051 | Buat 10 file markdown di /temp-test | codex | done | low | 2026-03-13 | 2026-03-13 | Buat 10 file `.md` kosong untuk kebutuhan user |
+| T-052 | Buat skill backup-undo untuk snapshot/restore file | codex | done | medium | 2026-03-13 | 2026-03-13 | Tambah skill `backup-undo` + script snapshot/undo |
+| T-053 | Tambah alias `bu` untuk backup-undo di bashrc | codex | done | low | 2026-03-13 | 2026-03-13 | Alias menunjuk ke `backup_undo.py` |
+| T-054 | Buat 10 file xfile di /mp-test dan snapshot backup | codex | done | low | 2026-03-13 | 2026-03-13 | Buat 10 file `xfile*.md` + backup snapshot folder |
+| T-055 | Buat 15 file xfile di /tmp-test dan snapshot backup | codex | done | low | 2026-03-13 | 2026-03-13 | Buat 15 file `xfile*.md` + backup snapshot folder |
+| T-056 | Hapus skill backup-undo dan alias bu | codex | done | low | 2026-03-13 | 2026-03-13 | Delete folder skill + hapus alias di bashrc |
+| T-057 | Bersihkan snapshot backup-undo | codex | done | low | 2026-03-13 | 2026-03-13 | Hapus folder snapshot di /root/.codex-backups |
+| T-052 | Tambah tombol undo untuk membatalkan giliran chat terakhir | codex | done | medium | 2026-03-13 | 2026-03-13 | Tambah endpoint undo session, tombol composer, dan hapus 1 turn terakhir sampai pesan user terbaru |
+| T-058 | Kurangi fetch session redundant saat reload daftar session | codex | done | medium | 2026-03-13 | 2026-03-13 | Reuse `activeSession` jika `updatedAt` dan `messageCount` masih sama agar `getSession` tidak selalu dipanggil lagi |
+| T-059 | Commit perubahan UI/performa dengan backup git aman | codex | done | low | 2026-03-13 | 2026-03-13 | Buat backup branch sebelum commit lalu push perubahan ke remote |
 
 ## Backlog (Opsional)
 - Tambah kolom `link` jika perlu tautan PR/issue.

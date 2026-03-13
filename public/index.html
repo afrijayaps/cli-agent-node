@@ -99,40 +99,43 @@
               required
             ></textarea>
             <div class="composer-actions">
-              <button id="sendButton" class="button primary send-inline" type="submit" aria-label="Send">></button>
-              <button id="stopButton" class="button stop-inline" type="button" aria-label="Stop" hidden>Stop</button>
+              <div class="composer-chips">
+                <div class="chip-icon-wrap icon-only">
+                  <span class="chip-icon icon-model" aria-hidden="true"></span>
+                  <select id="modelSelect" class="chip-select icon-only" aria-label="Model"></select>
+                </div>
+                <div class="chip-icon-wrap icon-model icon-input" style="display: none" id="modelInputWrap">
+                  <input
+                    id="modelInput"
+                    class="chip-input"
+                    placeholder=""
+                    autocomplete="off"
+                    aria-label="Model manual"
+                  />
+                </div>
+                <div class="chip-icon-wrap icon-only">
+                  <span class="chip-icon icon-reasoning" aria-hidden="true"></span>
+                  <select id="reasoningSelect" class="chip-select icon-only" aria-label="Reasoning">
+                    <option value="low">Reasoning: Low</option>
+                    <option value="medium" selected>Reasoning: Medium</option>
+                    <option value="high">Reasoning: High</option>
+                    <option value="xhigh">Reasoning: Extra High</option>
+                  </select>
+                </div>
+                <div class="chip-icon-wrap icon-only">
+                  <span class="chip-icon icon-mode" aria-hidden="true"></span>
+                  <select id="modeSelect" class="chip-select icon-only" aria-label="Mode">
+                    <option value="normal">Mode: Normal</option>
+                    <option value="plan">Mode: Plan</option>
+                  </select>
+                </div>
+              </div>
+              <div class="composer-btns">
+                <button id="stopButton" class="button stop-inline" type="button" aria-label="Stop" hidden>■</button>
+                <button id="undoButton" class="button undo-inline" type="button" aria-label="Undo">↩</button>
+                <button id="sendButton" class="button primary send-inline" type="submit" aria-label="Send">↑</button>
+              </div>
             </div>
-          </div>
-          <div class="composer-controls-bottom">
-          <div class="chip-icon-wrap icon-only">
-            <span class="chip-icon icon-model" aria-hidden="true"></span>
-            <select id="modelSelect" class="chip-select icon-only" aria-label="Model"></select>
-          </div>
-          <div class="chip-icon-wrap icon-model icon-input" style="display: none" id="modelInputWrap">
-            <input
-              id="modelInput"
-              class="chip-input"
-              placeholder=""
-              autocomplete="off"
-              aria-label="Model manual"
-            />
-          </div>
-          <div class="chip-icon-wrap icon-only">
-            <span class="chip-icon icon-reasoning" aria-hidden="true"></span>
-            <select id="reasoningSelect" class="chip-select icon-only" aria-label="Reasoning">
-              <option value="low">Reasoning: Low</option>
-              <option value="medium" selected>Reasoning: Medium</option>
-              <option value="high">Reasoning: High</option>
-              <option value="xhigh">Reasoning: Extra High</option>
-            </select>
-          </div>
-          <div class="chip-icon-wrap icon-only">
-            <span class="chip-icon icon-mode" aria-hidden="true"></span>
-            <select id="modeSelect" class="chip-select icon-only" aria-label="Mode">
-              <option value="normal">Mode: Normal</option>
-              <option value="plan">Mode: Plan</option>
-            </select>
-          </div>
           </div>
         </form>
       </main>

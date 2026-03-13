@@ -28,6 +28,7 @@ const els = {
   modeSelect: document.getElementById('modeSelect'),
   askForm: document.getElementById('askForm'),
   promptInput: document.getElementById('promptInput'),
+  undoButton: document.getElementById('undoButton'),
   sendButton: document.getElementById('sendButton'),
   stopButton: document.getElementById('stopButton'),
   processInline: document.getElementById('processInline'),
@@ -106,6 +107,16 @@ const sessionDomCache = new Map();
 const CHAT_WINDOW_SIZE = 80;
 const CHAT_WINDOW_STEP = 50;
 const SESSION_DOM_CACHE_LIMIT = 12;
+const COMPOSER_COLLAPSE_THRESHOLD = 64;
+
+let composerCollapsed = false;
+let composerInputFocused = false;
+
+function setComposerCollapsed(collapsed) {
+  if (composerCollapsed === collapsed || !els.askForm) return;
+  composerCollapsed = collapsed;
+  els.askForm.classList.toggle('composer--collapsed', collapsed);
+}
 
 function createRenderCacheState() {
   return {
@@ -308,9 +319,15 @@ function handleChatScroll() {
     return;
   }
 
-  domState.scrollTop = els.chatLog.scrollTop;
-  if (els.chatLog.scrollTop <= 120) {
+  const { scrollTop, scrollHeight, clientHeight } = els.chatLog;
+  domState.scrollTop = scrollTop;
+
+  if (scrollTop <= 120) {
     loadOlderMessagesForActiveSession();
+  }
+
+  if (!composerInputFocused) {
+    setComposerCollapsed(scrollHeight - scrollTop - clientHeight > COMPOSER_COLLAPSE_THRESHOLD);
   }
 }
 
@@ -500,7 +517,7 @@ function handlePromptKeydown(event) {
   if (event.key !== 'Enter') {
     return;
   }
-  if (event.shiftKey || event.isComposing) {
+  if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) {
     return;
   }
 
@@ -509,6 +526,16 @@ function handlePromptKeydown(event) {
     els.askForm.requestSubmit();
   } else if (els.askForm) {
     els.askForm.dispatchEvent(new Event('submit', { cancelable: true }));
+  }
+}
+
+function handlePromptBeforeInput(event) {
+  if (!event || typeof event.inputType !== 'string') {
+    return;
+  }
+
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+    event.stopPropagation();
   }
 }
 
@@ -579,6 +606,16 @@ function renderJobsPopover() {
 
   const jobs = getDisplayedJobsList();
   els.jobsPopover.classList.remove('hidden');
+
+  // Diff-based update: avoid clearing all nodes if jobs haven't changed
+  const prevRows = els.jobsPopoverBody.querySelectorAll('[data-job-key]');
+  const prevKeys = new Set([...prevRows].map((r) => r.dataset.jobKey));
+  const nextKeys = new Set(jobs.map((job) => `${job.projectId}|${job.sessionId}|${job.status}`));
+  const unchanged = prevKeys.size === nextKeys.size && [...prevKeys].every((k) => nextKeys.has(k));
+  if (unchanged) {
+    return;
+  }
+
   els.jobsPopoverBody.innerHTML = '';
 
   if (jobs.length === 0) {
@@ -589,9 +626,11 @@ function renderJobsPopover() {
     return;
   }
 
+  const frag = document.createDocumentFragment();
   jobs.forEach((job) => {
     const row = document.createElement('div');
     row.className = 'jobs-row';
+    row.dataset.jobKey = `${job.projectId}|${job.sessionId}|${job.status}`;
 
     const title = document.createElement('div');
     title.className = 'jobs-title';
@@ -602,8 +641,9 @@ function renderJobsPopover() {
     meta.textContent = formatJobMeta(job);
 
     row.append(title, meta);
-    els.jobsPopoverBody.appendChild(row);
+    frag.appendChild(row);
   });
+  els.jobsPopoverBody.appendChild(frag);
 }
 
 function toggleJobsPopover(forceOpen) {
@@ -849,6 +889,14 @@ function updateSendButtonState() {
   els.sendButton.disabled = !canSend;
   els.sendButton.textContent = '>';
   els.sendButton.classList.remove('stop');
+
+  if (els.undoButton) {
+    const hasMessages =
+      Boolean(state.activeSession) &&
+      Array.isArray(state.activeSession.messages) &&
+      state.activeSession.messages.length > 0;
+    els.undoButton.disabled = !state.activeProjectId || !state.activeSessionId || !hasMessages || state.busy || isActiveAwaiting();
+  }
 
   if (els.stopButton) {
     if (isActiveAwaiting()) {
@@ -1163,6 +1211,34 @@ function getSelectedProject() {
   return state.projects.find((project) => project.id === state.activeProjectId) || null;
 }
 
+function getSessionSummary(sessionId) {
+  if (!sessionId || !Array.isArray(state.sessions)) {
+    return null;
+  }
+  return state.sessions.find((session) => session.id === sessionId) || null;
+}
+
+function canReuseActiveSession(sessionId) {
+  if (!sessionId || !state.activeSession || state.activeSession.id !== sessionId) {
+    return false;
+  }
+
+  const summary = getSessionSummary(sessionId);
+  if (!summary) {
+    return false;
+  }
+
+  const activeUpdatedAt =
+    typeof state.activeSession.updatedAt === 'string' ? state.activeSession.updatedAt : '';
+  const summaryUpdatedAt = typeof summary.updatedAt === 'string' ? summary.updatedAt : '';
+  const activeMessageCount = Array.isArray(state.activeSession.messages)
+    ? state.activeSession.messages.length
+    : 0;
+  const summaryMessageCount = Number.isFinite(summary.messageCount) ? summary.messageCount : 0;
+
+  return activeUpdatedAt === summaryUpdatedAt && activeMessageCount === summaryMessageCount;
+}
+
 function getMessageKey(message, index) {
   if (!message || typeof message !== 'object') {
     return `unknown-${index}`;
@@ -1311,11 +1387,63 @@ function renderSessionItem(session, index) {
   return item;
 }
 
-function renderSessionList() {
-  els.sessionList.innerHTML = '';
+function getSessionItemKey(session) {
+  const runtime = getSessionRuntimeStatus(session);
+  const busy = isSessionBusy(state.activeProjectId, session.id);
+  const active = session.id === state.activeSessionId;
+  const statusSuffix = runtime && runtime.label ? runtime.label : '';
+  return `${session.id}|${session.title || ''}|${session.messageCount || 0}|${session.updatedAt || ''}|${active}|${busy}|${statusSuffix}`;
+}
 
-  state.sessions.forEach((session, index) => {
-    els.sessionList.appendChild(renderSessionItem(session, index));
+function renderSessionList() {
+  const sessions = state.sessions;
+  const existingItems = els.sessionList.querySelectorAll('[data-session-id]');
+
+  // If session count or order changed, do full rebuild
+  const needsRebuild =
+    existingItems.length !== sessions.length ||
+    [...existingItems].some((el, i) => el.dataset.sessionId !== sessions[i].id);
+
+  if (needsRebuild) {
+    const frag = document.createDocumentFragment();
+    sessions.forEach((session, index) => {
+      frag.appendChild(renderSessionItem(session, index));
+    });
+    els.sessionList.innerHTML = '';
+    els.sessionList.appendChild(frag);
+    return;
+  }
+
+  // Patch in-place: update only what changed per item
+  existingItems.forEach((item, index) => {
+    const session = sessions[index];
+    const runtime = getSessionRuntimeStatus(session);
+    const busy = isSessionBusy(state.activeProjectId, session.id);
+    const active = session.id === state.activeSessionId;
+
+    item.classList.toggle('active', active);
+
+    const runtimeDot = item.querySelector('.session-runtime');
+    if (runtimeDot) {
+      runtimeDot.className = `session-runtime${runtime && runtime.tone ? ` ${runtime.tone}` : ''}`;
+      runtimeDot.title = runtime && runtime.label ? runtime.label : 'Idle';
+    }
+
+    const titleEl = item.querySelector('.session-title');
+    if (titleEl) {
+      titleEl.textContent = getSessionDisplayTitle(session);
+    }
+
+    const deleteBtn = item.querySelector('.session-delete');
+    if (deleteBtn) {
+      deleteBtn.disabled = state.busy || busy;
+    }
+
+    const meta = item.querySelector('.small');
+    if (meta) {
+      const statusSuffix = runtime && runtime.label ? ` • ${runtime.label}` : '';
+      meta.textContent = `${session.messageCount || 0} msg • ${formatRelative(session.updatedAt)}${statusSuffix}`;
+    }
   });
 }
 
@@ -1338,11 +1466,11 @@ function updatePromptPlaceholder() {
   }
 
   if (state.activeSessionId) {
-    els.promptInput.placeholder = `Session: ${state.activeSessionId} | Tulis prompt...`;
+    els.promptInput.placeholder = 'Tulis prompt...';
     return;
   }
 
-  els.promptInput.placeholder = 'Tulis prompt...';
+  els.promptInput.placeholder = 'Pilih session dulu...';
 }
 
 let renderScheduled = false;
@@ -1437,7 +1565,7 @@ function renderMessagesNow(force = false) {
       : '';
   const warningKey = getWarningKey(state.chatWarning);
 
-  const needsFull =
+  let needsFull =
     force ||
     !renderCache.initialized ||
     renderCache.sessionId !== sessionId ||
@@ -1449,9 +1577,80 @@ function renderMessagesNow(force = false) {
     renderCache.warningKey !== warningKey ||
     renderCache.assistantFlashId !== state.assistantFlashMessageId;
 
+  // Optimization: avoid full DOM rebuild for incremental changes
+  if (needsFull && !force && renderCache.initialized && renderCache.sessionId === sessionId) {
+    const sameWindow =
+      renderCache.visibleStart === visibleStart &&
+      renderCache.visibleEnd === visibleEnd &&
+      renderCache.lastSessionUpdatedAt === sessionUpdatedAt &&
+      renderCache.warningKey === warningKey;
+
+    // Case 1: only flash class toggled — no DOM rebuild needed
+    if (
+      sameWindow &&
+      renderCache.totalMessageCount === messageCount &&
+      renderCache.lastVisibleMessageKey === nextLastVisibleKey &&
+      renderCache.assistantFlashId !== state.assistantFlashMessageId
+    ) {
+      const prevFlashId = renderCache.assistantFlashId;
+      if (prevFlashId) {
+        const prevNode = domState.messageList.querySelector(`[data-message-id="${escapeSelector(prevFlashId)}"]`);
+        if (prevNode) prevNode.classList.remove('assistant-arrived');
+      }
+      const nextFlashId = state.assistantFlashMessageId;
+      if (nextFlashId) {
+        const nextNode = domState.messageList.querySelector(`[data-message-id="${escapeSelector(nextFlashId)}"]`);
+        if (nextNode) nextNode.classList.add('assistant-arrived');
+      }
+      renderCache.assistantFlashId = state.assistantFlashMessageId;
+      needsFull = false;
+    }
+
+    // Case 2: only last message content changed (streaming update) — replace last node only
+    if (
+      needsFull &&
+      sameWindow &&
+      renderCache.totalMessageCount === messageCount &&
+      renderCache.lastVisibleMessageKey !== nextLastVisibleKey &&
+      renderCache.assistantFlashId === state.assistantFlashMessageId &&
+      visibleMessages.length > 0 &&
+      domState.messageList.childElementCount === visibleMessages.length
+    ) {
+      const lastMessage = visibleMessages[visibleMessages.length - 1];
+      const isLatestAssistant =
+        lastMessage.role === 'assistant' && lastVisibleIndex === visibleEnd - 1 && !isActiveAwaiting();
+      const shouldFlash =
+        lastMessage.role === 'assistant' &&
+        lastMessage.id &&
+        lastMessage.id === state.assistantFlashMessageId;
+      let newNode = null;
+      if (lastMessage.role === 'assistant') {
+        newNode = buildAssistantMessage({
+          message: lastMessage,
+          isLatestAssistant,
+          shouldFlash,
+          animationDelay: '0ms',
+          formatRelative,
+          setStatus,
+        });
+      } else {
+        newNode = buildUserMessage({
+          message: lastMessage,
+          shouldFlash,
+          animationDelay: '0ms',
+          formatRelative,
+        });
+      }
+      if (newNode && domState.messageList.lastChild) {
+        domState.messageList.replaceChild(newNode, domState.messageList.lastChild);
+        renderCache.lastVisibleMessageKey = nextLastVisibleKey;
+        needsFull = false;
+      }
+    }
+  }
+
   if (needsFull) {
-    domState.messageList.innerHTML = '';
-    domState.footer.innerHTML = '';
+    const fragment = document.createDocumentFragment();
 
     visibleMessages.forEach((message, offset) => {
       const index = visibleStart + offset;
@@ -1470,12 +1669,12 @@ function renderMessagesNow(force = false) {
           setStatus,
         });
         if (assistantMessage) {
-          domState.messageList.appendChild(assistantMessage);
+          fragment.appendChild(assistantMessage);
         }
         return;
       }
 
-      domState.messageList.appendChild(
+      fragment.appendChild(
         buildUserMessage({
           message,
           shouldFlash,
@@ -1484,6 +1683,10 @@ function renderMessagesNow(force = false) {
         }),
       );
     });
+
+    domState.messageList.innerHTML = '';
+    domState.footer.innerHTML = '';
+    domState.messageList.appendChild(fragment);
   }
 
   if (needsFull && hasWarning) {
@@ -1767,7 +1970,9 @@ async function loadSessions(projectId, options = {}) {
   }
 }
 
-async function onSessionSelect(sessionId, shouldRenderList = true) {
+async function onSessionSelect(sessionId, shouldRenderList = true, options = {}) {
+  const { preferCached = true } = options;
+
   if (hasOtherSessionActivity(state.activeProjectId, sessionId)) {
     setStatus('proses tetap berjalan di background', false, true);
   }
@@ -1782,8 +1987,10 @@ async function onSessionSelect(sessionId, shouldRenderList = true) {
   updateSendButtonState();
   mountSessionDomState(sessionId);
 
-  const data = await api.getSession(state.activeProjectId, sessionId);
-  state.activeSession = data.session;
+  if (!preferCached || !canReuseActiveSession(sessionId)) {
+    const data = await api.getSession(state.activeProjectId, sessionId);
+    state.activeSession = data.session;
+  }
   applySessionPreferences(state.activeSession);
   syncActiveQueueSize();
   syncProcessFromJobs();
@@ -1870,6 +2077,51 @@ async function deleteSession(sessionId) {
     setStatus('session dihapus');
   } catch (error) {
     setStatus(error.message || 'gagal menghapus session', true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function undoLastTurn() {
+  if (!state.activeProjectId || !state.activeSessionId) {
+    setStatus('pilih session dulu', true);
+    return;
+  }
+
+  if (isActiveAwaiting()) {
+    setStatus('tunggu proses aktif selesai dulu', true);
+    return;
+  }
+
+  if (state.busy) {
+    return;
+  }
+
+  const hasMessages =
+    state.activeSession &&
+    Array.isArray(state.activeSession.messages) &&
+    state.activeSession.messages.length > 0;
+  if (!hasMessages) {
+    setStatus('tidak ada pesan untuk di-undo', true);
+    return;
+  }
+
+  setBusy(true);
+  setStatus('undo pesan terakhir...', false, true);
+
+  try {
+    const data = await api.undoSession(state.activeProjectId, state.activeSessionId);
+    if (data && data.session) {
+      state.activeSession = data.session;
+      sessionDomCache.delete(state.activeSessionId);
+    }
+    state.chatWarning = null;
+    await loadSessions(state.activeProjectId);
+    renderHeader();
+    renderMessages({ force: true });
+    setStatus('pesan terakhir di-undo');
+  } catch (error) {
+    setStatus(error.message || 'gagal undo pesan terakhir', true);
   } finally {
     setBusy(false);
   }
@@ -2409,6 +2661,9 @@ async function init() {
   if (els.stopButton) {
     els.stopButton.addEventListener('click', stopActiveRequest);
   }
+  if (els.undoButton) {
+    els.undoButton.addEventListener('click', undoLastTurn);
+  }
   if (els.modelSelect) {
     els.modelSelect.addEventListener('change', syncPreferencesFromControls);
   }
@@ -2444,6 +2699,27 @@ async function init() {
   els.panelBackdrop.addEventListener('click', closeMobilePanel);
   if (els.promptInput) {
     els.promptInput.addEventListener('keydown', handlePromptKeydown);
+    els.promptInput.addEventListener('beforeinput', handlePromptBeforeInput);
+    els.promptInput.addEventListener('focus', () => {
+      composerInputFocused = true;
+      if (composerCollapsed) {
+        setComposerCollapsed(false);
+        scrollChatToBottom();
+      }
+    });
+    els.promptInput.addEventListener('blur', () => {
+      composerInputFocused = false;
+    });
+  }
+  if (els.askForm) {
+    const composerBox = els.askForm.querySelector('.composer-box');
+    if (composerBox) {
+      composerBox.addEventListener('click', (e) => {
+        if (composerCollapsed && !e.target.closest('button')) {
+          els.promptInput?.focus();
+        }
+      });
+    }
   }
   if (els.chatLog) {
     els.chatLog.addEventListener('scroll', handleChatScroll, { passive: true });

@@ -20,6 +20,7 @@ const {
   createSession,
   getSession,
   getProject,
+  undoLastTurn,
 } = require('../services/project-service');
 
 const router = express.Router();
@@ -344,6 +345,15 @@ router.delete('/projects/:projectId/sessions/:sessionId', async (req, res) => {
     res.status(200).json(result);
   } catch (error) {
     handleError(res, error, 'Failed to delete session:');
+  }
+});
+
+router.post('/projects/:projectId/sessions/:sessionId/undo', async (req, res) => {
+  try {
+    const result = await undoLastTurn(req.params.projectId, req.params.sessionId);
+    res.status(200).json(result);
+  } catch (error) {
+    handleError(res, error, 'Failed to undo last turn:');
   }
 });
 
