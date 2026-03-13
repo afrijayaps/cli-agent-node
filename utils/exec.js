@@ -97,6 +97,20 @@ async function runCommand(command, options = {}) {
       resolve(normalizedStdout);
     });
 
+    if (child.stderr && typeof child.stderr.on === 'function' && options) {
+      const onStderrChunk =
+        typeof options.onStderrChunk === 'function' ? options.onStderrChunk : null;
+      if (onStderrChunk) {
+        child.stderr.on('data', (chunk) => {
+          try {
+            onStderrChunk(String(chunk || ''));
+          } catch (_error) {
+            // Ignore progress callback errors so command execution can continue.
+          }
+        });
+      }
+    }
+
     if (signal) {
       if (signal.aborted) {
         settled = true;

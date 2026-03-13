@@ -1,13 +1,6 @@
 const { AppError } = require('./errors');
-const {
-  PROJECTS_DIR,
-  ensureDir,
-  fileExists,
-  readJson,
-  writeJson,
-  fs,
-  path,
-} = require('./storage');
+const { PROJECTS_DIR, ensureDir, fileExists, readJson, writeJson, fs, path } = require('./storage');
+const { getDb } = require('./sqlite');
 
 const PROJECT_FILE = 'project.json';
 const SESSIONS_DIR = 'sessions';
@@ -76,8 +69,7 @@ function isSafeSessionId(value) {
     return false;
   }
 
-  const newPattern = /^[a-z0-9._-]+::[a-z0-9]{6}$/i;
-  return newPattern.test(value);
+  return /^[a-z0-9._-]+::[a-z0-9]{6}$/i.test(value);
 }
 
 function makeId(prefix) {
@@ -127,23 +119,6 @@ function resolveProjectNameFromPath(projectPath, fallbackName = '') {
   return typeof fallbackName === 'string' ? fallbackName : '';
 }
 
-async function ensureProjectNameSynced(project, projectFile) {
-  if (!project || typeof project !== 'object') {
-    return project;
-  }
-
-  const desiredName = resolveProjectNameFromPath(project.projectPath, project.name);
-  if (!desiredName || project.name === desiredName) {
-    return project;
-  }
-
-  const updated = { ...project, name: desiredName };
-  if (projectFile) {
-    await writeJson(projectFile, updated);
-  }
-  return updated;
-}
-
 function makeProjectId(name, projectPath) {
   const nameSlug = slugify(name);
   const pathSlug = slugifyProjectPath(projectPath);
@@ -176,7 +151,6 @@ function getProjectDir(projectId) {
     throw new AppError(400, 'Validation error', 'Invalid project id.');
   }
 
-  // Backward compatibility for old one-level project IDs.
   if (!projectId.includes('--')) {
     return path.join(PROJECTS_DIR, projectId);
   }
@@ -207,15 +181,161 @@ function getSessionFile(projectId, sessionId) {
   return path.join(getSessionsDir(projectId), `${sessionId}.json`);
 }
 
-async function getProjectOrThrow(projectId) {
+function mapProjectRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    name: row.name,
+    projectPath: row.project_path,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapSessionRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  let preferences = { ...DEFAULT_SESSION_PREFERENCES };
+  let messages = [];
+
+  try {
+    preferences = normalizeSessionPreferences(JSON.parse(row.preferences_json || '{}'));
+  } catch (_error) {
+    preferences = { ...DEFAULT_SESSION_PREFERENCES };
+  }
+
+  try {
+    const parsed = JSON.parse(row.messages_json || '[]');
+    messages = Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    messages = [];
+  }
+
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    preferences,
+    messages,
+  };
+}
+
+function upsertProjectDb(project) {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO projects (id, name, project_path, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       project_path = excluded.project_path,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at`,
+  ).run(project.id, project.name, project.projectPath, project.createdAt, project.updatedAt);
+}
+
+function upsertSessionDb(session) {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO sessions (
+      id, project_id, title, created_at, updated_at, preferences_json, messages_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project_id = excluded.project_id,
+      title = excluded.title,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      preferences_json = excluded.preferences_json,
+      messages_json = excluded.messages_json`,
+  ).run(
+    session.id,
+    session.projectId,
+    session.title || '',
+    session.createdAt,
+    session.updatedAt,
+    JSON.stringify(normalizeSessionPreferences(session.preferences)),
+    JSON.stringify(Array.isArray(session.messages) ? session.messages : []),
+  );
+}
+
+async function migrateLegacyProjectIfNeeded(projectId) {
+  const db = getDb();
+  const existing = db.prepare(`SELECT id, name, project_path, created_at, updated_at FROM projects WHERE id = ?`).get(projectId);
+  if (existing) {
+    return mapProjectRow(existing);
+  }
+
   const projectFile = getProjectFile(projectId);
   const project = await readJson(projectFile, null);
+  if (!project) {
+    return null;
+  }
+
+  const synced = await ensureProjectNameSynced(project, projectFile);
+  upsertProjectDb(synced);
+
+  const sessionsDir = getSessionsDir(projectId);
+  if (await directoryExists(sessionsDir)) {
+    const files = await fs.readdir(sessionsDir, { withFileTypes: true });
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith('.json')) {
+        continue;
+      }
+
+      const session = await readJson(path.join(sessionsDir, file.name), null);
+      if (session && isSafeSessionId(session.id)) {
+        upsertSessionDb({
+          ...session,
+          projectId,
+          preferences: normalizeSessionPreferences(session.preferences),
+          messages: Array.isArray(session.messages) ? session.messages : [],
+        });
+      }
+    }
+  }
+
+  return synced;
+}
+
+async function ensureProjectNameSynced(project, projectFile) {
+  if (!project || typeof project !== 'object') {
+    return project;
+  }
+
+  const desiredName = resolveProjectNameFromPath(project.projectPath, project.name);
+  if (!desiredName || project.name === desiredName) {
+    return project;
+  }
+
+  const updated = { ...project, name: desiredName };
+  if (projectFile) {
+    await writeJson(projectFile, updated);
+  }
+  upsertProjectDb(updated);
+  return updated;
+}
+
+async function getProjectOrThrow(projectId) {
+  const db = getDb();
+  let project = mapProjectRow(
+    db.prepare(`SELECT id, name, project_path, created_at, updated_at FROM projects WHERE id = ?`).get(projectId),
+  );
+
+  if (!project) {
+    project = await migrateLegacyProjectIfNeeded(projectId);
+  }
 
   if (!project) {
     throw new AppError(404, 'Not found', 'Project not found.');
   }
 
-  return ensureProjectNameSynced(project, projectFile);
+  return ensureProjectNameSynced(project, getProjectFile(projectId));
 }
 
 async function listProjects(options = {}) {
@@ -224,35 +344,39 @@ async function listProjects(options = {}) {
 
   await ensureDir(PROJECTS_DIR);
 
-  const levelOne = await fs.readdir(PROJECTS_DIR, { withFileTypes: true });
-  const nameDirs = levelOne.filter((d) => d.isDirectory());
+  const db = getDb();
+  const rows = db
+    .prepare(`SELECT id, name, project_path, created_at, updated_at FROM projects ORDER BY updated_at DESC`)
+    .all();
 
-  const projectResults = await Promise.all(
-    nameDirs.map(async (nameDir) => {
+  let projects = rows.map(mapProjectRow);
+
+  if (projects.length === 0) {
+    const levelOne = await fs.readdir(PROJECTS_DIR, { withFileTypes: true });
+    for (const nameDir of levelOne.filter((entry) => entry.isDirectory())) {
       const namePath = path.join(PROJECTS_DIR, nameDir.name);
       const legacyProjectFile = path.join(namePath, PROJECT_FILE);
       const legacyProject = await readJson(legacyProjectFile, null);
+
       if (legacyProject) {
-        return [await ensureProjectNameSynced(legacyProject, legacyProjectFile)];
+        const synced = await ensureProjectNameSynced(legacyProject, legacyProjectFile);
+        upsertProjectDb(synced);
+        projects.push(synced);
+        continue;
       }
 
       const levelTwo = await fs.readdir(namePath, { withFileTypes: true });
-      const pathDirs = levelTwo.filter((d) => d.isDirectory());
-
-      return Promise.all(
-        pathDirs.map(async (pathDir) => {
-          const projectFile = path.join(namePath, pathDir.name, PROJECT_FILE);
-          const project = await readJson(projectFile, null);
-          if (project) {
-            return ensureProjectNameSynced(project, projectFile);
-          }
-          return null;
-        }),
-      ).then((results) => results.filter(Boolean));
-    }),
-  );
-
-  const projects = projectResults.flat();
+      for (const pathDir of levelTwo.filter((entry) => entry.isDirectory())) {
+        const projectFile = path.join(namePath, pathDir.name, PROJECT_FILE);
+        const project = await readJson(projectFile, null);
+        if (project) {
+          const synced = await ensureProjectNameSynced(project, projectFile);
+          upsertProjectDb(synced);
+          projects.push(synced);
+        }
+      }
+    }
+  }
 
   projects.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
@@ -262,15 +386,11 @@ async function listProjects(options = {}) {
 
   const validProjects = projects.filter(
     (project) =>
-      typeof project.projectPath === 'string' &&
-      isPathInsideRoot(project.projectPath, masterProjectRoot),
+      typeof project.projectPath === 'string' && isPathInsideRoot(project.projectPath, masterProjectRoot),
   );
 
-  const existChecks = await Promise.all(
-    validProjects.map((project) => directoryExists(project.projectPath)),
-  );
-
-  return validProjects.filter((_, i) => existChecks[i]);
+  const existChecks = await Promise.all(validProjects.map((project) => directoryExists(project.projectPath)));
+  return validProjects.filter((_, index) => existChecks[index]);
 }
 
 async function upsertProjectRecord({ name, projectPath, failIfExists = false }) {
@@ -291,6 +411,19 @@ async function upsertProjectRecord({ name, projectPath, failIfExists = false }) 
   const projectDir = getProjectDir(projectId);
   const sessionsDir = getSessionsDir(projectId);
   const projectFile = getProjectFile(projectId);
+  const db = getDb();
+
+  const existingRow = db
+    .prepare(`SELECT id, name, project_path, created_at, updated_at FROM projects WHERE id = ?`)
+    .get(projectId);
+
+  if (existingRow) {
+    if (failIfExists) {
+      throw new AppError(409, 'Conflict', 'Project with same name/path already exists.');
+    }
+
+    return mapProjectRow(existingRow);
+  }
 
   if (await fileExists(projectFile)) {
     if (failIfExists) {
@@ -298,11 +431,13 @@ async function upsertProjectRecord({ name, projectPath, failIfExists = false }) 
     }
 
     const existing = await readJson(projectFile, null);
-    return existing;
+    if (existing) {
+      upsertProjectDb(existing);
+      return existing;
+    }
   }
 
   const now = new Date().toISOString();
-
   const project = {
     id: projectId,
     name: normalizedName,
@@ -314,6 +449,7 @@ async function upsertProjectRecord({ name, projectPath, failIfExists = false }) 
   await ensureDir(projectDir);
   await ensureDir(sessionsDir);
   await writeJson(projectFile, project);
+  upsertProjectDb(project);
 
   return project;
 }
@@ -322,7 +458,7 @@ async function createProject({ name, projectPath }) {
   return upsertProjectRecord({ name, projectPath, failIfExists: true });
 }
 
-const syncCache = new Map(); // normalizedRoot → { ts, promise }
+const syncCache = new Map();
 const SYNC_CACHE_TTL_MS = 5000;
 
 async function syncProjectsFromMasterRoot(masterProjectRoot) {
@@ -332,7 +468,6 @@ async function syncProjectsFromMasterRoot(masterProjectRoot) {
     throw new AppError(400, 'Validation error', 'masterProjectRoot is required.');
   }
 
-  // Return cached result if last sync was within TTL
   const cached = syncCache.get(normalizedRoot);
   if (cached && Date.now() - cached.ts < SYNC_CACHE_TTL_MS) {
     return cached.promise;
@@ -355,8 +490,7 @@ async function syncProjectsFromMasterRoot(masterProjectRoot) {
     }
 
     const entries = await fs.readdir(normalizedRoot, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory());
-
+    const dirs = entries.filter((entry) => entry.isDirectory());
     const results = await Promise.all(
       dirs.map((entry) =>
         upsertProjectRecord({
@@ -371,33 +505,70 @@ async function syncProjectsFromMasterRoot(masterProjectRoot) {
   })();
 
   syncCache.set(normalizedRoot, { ts: Date.now(), promise });
-
-  // On failure, remove from cache so next request retries
   promise.catch(() => syncCache.delete(normalizedRoot));
-
   return promise;
 }
 
 async function touchProject(projectId) {
   const project = await getProjectOrThrow(projectId);
-  project.updatedAt = new Date().toISOString();
-  await writeJson(getProjectFile(projectId), project);
-  return project;
+  const updated = {
+    ...project,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await writeJson(getProjectFile(projectId), updated);
+  upsertProjectDb(updated);
+  return updated;
 }
 
 async function listSessions(projectId) {
   await getProjectOrThrow(projectId);
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT id, title, created_at, updated_at, messages_json
+       FROM sessions
+       WHERE project_id = ?
+       ORDER BY updated_at DESC`,
+    )
+    .all(projectId);
+
+  if (rows.length > 0) {
+    return rows.map((row) => {
+      let messages = [];
+      try {
+        const parsed = JSON.parse(row.messages_json || '[]');
+        messages = Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        messages = [];
+      }
+
+      return {
+        id: row.id,
+        title: row.title,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        messageCount: messages.length,
+      };
+    });
+  }
 
   const sessionsDir = getSessionsDir(projectId);
   await ensureDir(sessionsDir);
-
   const files = await fs.readdir(sessionsDir, { withFileTypes: true });
-  const jsonFiles = files.filter((f) => f.isFile() && f.name.endsWith('.json'));
+  const jsonFiles = files.filter((file) => file.isFile() && file.name.endsWith('.json'));
 
   const results = await Promise.all(
     jsonFiles.map(async (file) => {
       const session = await readJson(path.join(sessionsDir, file.name), null);
       if (session && isSafeSessionId(session.id)) {
+        upsertSessionDb({
+          ...session,
+          projectId,
+          preferences: normalizeSessionPreferences(session.preferences),
+          messages: Array.isArray(session.messages) ? session.messages : [],
+        });
+
         return {
           id: session.id,
           title: session.title,
@@ -410,40 +581,80 @@ async function listSessions(projectId) {
     }),
   );
 
-  const sessions = results.filter(Boolean);
-  sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  return sessions;
+  return results
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+async function getSession(projectId, sessionId) {
+  await getProjectOrThrow(projectId);
+  const db = getDb();
+  let session = mapSessionRow(
+    db.prepare(
+      `SELECT id, project_id, title, created_at, updated_at, preferences_json, messages_json
+       FROM sessions
+       WHERE project_id = ? AND id = ?`,
+    ).get(projectId, sessionId),
+  );
+
+  if (!session) {
+    const sessionFile = getSessionFile(projectId, sessionId);
+
+    if (!(await fileExists(sessionFile))) {
+      throw new AppError(404, 'Not found', 'Session not found.');
+    }
+
+    const legacy = await readJson(sessionFile, null);
+    if (!legacy) {
+      throw new AppError(404, 'Not found', 'Session not found.');
+    }
+
+    session = {
+      ...legacy,
+      projectId,
+      preferences: normalizeSessionPreferences(legacy.preferences),
+      messages: Array.isArray(legacy.messages) ? legacy.messages : [],
+    };
+    upsertSessionDb(session);
+  }
+
+  return session;
+}
+
+async function persistSession(projectId, session) {
+  await writeJson(getSessionFile(projectId, session.id), session);
+  upsertSessionDb(session);
 }
 
 async function updateSessionTitle(projectId, sessionId, title) {
   const session = await getSession(projectId, sessionId);
-  const nextTitle = typeof title === 'string' ? title.trim() : '';
-
-  session.title = nextTitle;
+  session.title = typeof title === 'string' ? title.trim() : '';
   session.updatedAt = new Date().toISOString();
-  await writeJson(getSessionFile(projectId, sessionId), session);
+  await persistSession(projectId, session);
   await touchProject(projectId);
-
   return session;
 }
 
 async function deleteSession(projectId, sessionId) {
   await getProjectOrThrow(projectId);
   const sessionFile = getSessionFile(projectId, sessionId);
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM sessions WHERE project_id = ? AND id = ?`).run(projectId, sessionId);
 
-  if (!(await fileExists(sessionFile))) {
+  if (!(await fileExists(sessionFile)) && result.changes === 0) {
     throw new AppError(404, 'Not found', 'Session not found.');
   }
 
-  await fs.unlink(sessionFile);
-  await touchProject(projectId);
+  if (await fileExists(sessionFile)) {
+    await fs.unlink(sessionFile);
+  }
 
+  await touchProject(projectId);
   return { id: sessionId };
 }
 
 async function createSession(projectId, { title }) {
   const project = await getProjectOrThrow(projectId);
-
   const normalizedTitle = typeof title === 'string' ? title.trim() : '';
   const now = new Date().toISOString();
   const sessionId = makeSessionId(getProjectFolderName(project) || project.name || projectId);
@@ -458,36 +669,8 @@ async function createSession(projectId, { title }) {
     messages: [],
   };
 
-  const sessionFile = getSessionFile(projectId, sessionId);
-  await writeJson(sessionFile, session);
+  await persistSession(projectId, session);
   await touchProject(projectId);
-
-  return session;
-}
-
-async function getSession(projectId, sessionId) {
-  await getProjectOrThrow(projectId);
-  const sessionFile = getSessionFile(projectId, sessionId);
-
-  if (!(await fileExists(sessionFile))) {
-    throw new AppError(404, 'Not found', 'Session not found.');
-  }
-
-  const session = await readJson(sessionFile, null);
-  if (!session) {
-    throw new AppError(404, 'Not found', 'Session not found.');
-  }
-
-  if (!Array.isArray(session.messages)) {
-    session.messages = [];
-  }
-
-  if (!session.preferences || typeof session.preferences !== 'object') {
-    session.preferences = { ...DEFAULT_SESSION_PREFERENCES };
-  } else {
-    session.preferences = normalizeSessionPreferences(session.preferences);
-  }
-
   return session;
 }
 
@@ -530,9 +713,8 @@ async function appendMessages(projectId, sessionId, messages) {
   }
 
   session.updatedAt = new Date().toISOString();
-  await writeJson(getSessionFile(projectId, sessionId), session);
+  await persistSession(projectId, session);
   await touchProject(projectId);
-
   return session;
 }
 
@@ -559,7 +741,7 @@ async function undoLastTurn(projectId, sessionId) {
 
   session.messages.splice(targetIndex, removeCount);
   session.updatedAt = new Date().toISOString();
-  await writeJson(getSessionFile(projectId, sessionId), session);
+  await persistSession(projectId, session);
   await touchProject(projectId);
 
   return {
@@ -575,7 +757,7 @@ async function setSessionPreferences(projectId, sessionId, nextPreferences) {
     ...nextPreferences,
   });
   session.updatedAt = new Date().toISOString();
-  await writeJson(getSessionFile(projectId, sessionId), session);
+  await persistSession(projectId, session);
   await touchProject(projectId);
   return session;
 }

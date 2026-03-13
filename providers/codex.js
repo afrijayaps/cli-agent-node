@@ -56,6 +56,26 @@ function extractProgressLines(raw) {
   return output;
 }
 
+function extractProgressPercent(raw) {
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return null;
+  }
+
+  const cleaned = stripAnsi(raw);
+  const percentMatches = [...cleaned.matchAll(/\b(100|[1-9]?\d)\s*%/g)];
+  if (percentMatches.length === 0) {
+    return null;
+  }
+
+  const lastMatch = percentMatches[percentMatches.length - 1];
+  const value = Number.parseInt(lastMatch[1], 10);
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    return null;
+  }
+
+  return value;
+}
+
 async function ask(prompt, options = {}) {
   const outputFile = makeTempFilePath();
   const escapedOutputFile = escapeShellArg(outputFile);
@@ -83,17 +103,38 @@ async function ask(prompt, options = {}) {
     'exit $RC',
   ].join('; ');
 
-  const result = await runCommand(command, { ...options, captureStderr: true });
+  let stderrSnapshot = '';
+  let latestProgressPercent = null;
+  const result = await runCommand(command, {
+    ...options,
+    captureStderr: true,
+    onStderrChunk(chunk) {
+      stderrSnapshot += chunk;
+      const lines = extractProgressLines(stderrSnapshot);
+      const percent = extractProgressPercent(stderrSnapshot);
+      if (Number.isFinite(percent)) {
+        latestProgressPercent = percent;
+      }
+      if (typeof options.onProgress === 'function') {
+        options.onProgress({
+          lines,
+          percent: Number.isFinite(percent) ? percent : latestProgressPercent,
+        });
+      }
+    },
+  });
   if (typeof result === 'string') {
     return {
       text: result,
       progress: [],
+      progressPercent: latestProgressPercent,
     };
   }
 
   return {
     text: result.stdout || '',
     progress: extractProgressLines(result.stderr || ''),
+    progressPercent: extractProgressPercent(result.stderr || '') ?? latestProgressPercent,
   };
 }
 

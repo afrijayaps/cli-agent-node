@@ -26,7 +26,7 @@
           <div class="badge">CLI LOGIN ONLY</div>
           <h1 style="margin: 10px 0 0">Settings</h1>
           <p class="small" style="margin: 6px 0 0">
-            Atur master project root, AI manager, dan tampilan. Tidak perlu API key karena provider menggunakan CLI login di server.
+            Atur master project root, AI manager, dan tampilan. Auth harus lewat login CLI di server, bukan input token atau API key di aplikasi.
           </p>
         </div>
         <a href="/" class="button" style="width: auto; padding: 10px 14px">Back to Chat</a>
@@ -66,16 +66,58 @@
           </div>
           <button id="aiSaveButton" type="button" class="button primary">Save AI Manager</button>
           <div class="small" style="margin-top: 10px">Provider tersedia: <span id="providerList">-</span></div>
-          <div class="login-status" style="margin-top: 12px">
+          <div class="small" style="margin-top: 12px; font-weight: 700">Codex CLI</div>
+          <div class="login-status" style="margin-top: 8px">
             <span id="loginStatusDot" class="status-dot unknown" aria-hidden="true"></span>
             <div>
               <div id="loginStatusText" class="small">Codex: checking...</div>
               <div id="loginStatusHint" class="small muted"></div>
+              <div id="loginStatusEmail" class="small muted"></div>
             </div>
           </div>
+          <div class="row" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 6px">
+            <button id="refreshLoginStatusButton" type="button" class="button">Refresh Status</button>
+            <button id="startDeviceAuthButton" type="button" class="button primary">Mulai Device Auth</button>
+            <button id="logoutCodexButton" type="button" class="button danger">Logout</button>
+          </div>
+          <div class="small">Login ulang via CLI di server:</div>
+          <div class="code">codex login --device-auth</div>
+          <div id="deviceAuthResult" class="small muted" style="display: none; margin-top: 4px"></div>
+          <div id="deviceAuthLinkWrap" class="small" style="display: none">
+            Link verifikasi: <a id="deviceAuthLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+          </div>
+          <div id="deviceAuthCodeWrap" class="small" style="display: none">
+            Kode: <code id="deviceAuthCode"></code>
+            <button id="copyDeviceAuthCodeButton" type="button" class="button" style="width: auto; padding: 4px 8px; margin-left: 6px">Copy</button>
+          </div>
+          <div class="small muted" style="margin-top: 8px">
+            Step: klik "Mulai Device Auth", nanti muncul link verifikasi dan kode. Buka link, login/paste kode jika diminta, lalu klik "Refresh Status". Token di file auth hanya dipakai backend sebagai fallback cek status login.
+          </div>
+
+          <div class="small" style="margin-top: 14px; font-weight: 700">Claude CLI</div>
+          <div class="login-status" style="margin-top: 8px">
+            <span id="claudeStatusDot" class="status-dot unknown" aria-hidden="true"></span>
+            <div>
+              <div id="claudeStatusText" class="small">Claude: checking...</div>
+              <div id="claudeStatusHint" class="small muted"></div>
+              <div id="claudeStatusEmail" class="small muted"></div>
+            </div>
+          </div>
+          <div class="row" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 6px">
+            <button id="refreshClaudeStatusButton" type="button" class="button">Refresh Claude</button>
+            <button id="startClaudeLoginButton" type="button" class="button primary">Login Claude</button>
+            <button id="logoutClaudeButton" type="button" class="button danger">Logout Claude</button>
+          </div>
+          <div id="claudeLoginResult" class="small muted" style="display: none; margin-top: 4px"></div>
+          <div id="claudeLoginLinkWrap" class="small" style="display: none">
+            Login link: <a id="claudeLoginLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+          </div>
           <div class="small">Login via CLI di server:</div>
-          <div class="code">codex login</div>
-          <div class="code">claude --help</div>
+          <div class="code">claude auth login</div>
+          <div class="small muted" style="margin-top: 8px">
+            Klik "Login Claude" untuk mulai flow dari web. Jika server headless, link login akan muncul di atas jika diberikan oleh CLI. Saat flow login muncul, pilih opsi 1: Claude account with subscription (Pro, Max, Team, atau Enterprise).
+          </div>
+
           <div class="code">ollama list</div>
         </div>
       </section>

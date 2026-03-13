@@ -9,7 +9,8 @@ const { listModels } = require('../services/model-service');
 const { getSettings, updateSettings } = require('../services/settings-service');
 const { logError } = require('../services/logger');
 const { listJobs, countJobs, stopAllJobs } = require('../services/job-registry');
-const { getAuthStatus } = require('../services/auth-status');
+const { getAuthStatus, logoutAuth, startAuthLogin, startDeviceAuth } = require('../services/auth-status');
+const { getMemory, setMemory } = require('../services/memory-service');
 const {
   listProjects,
   createProject,
@@ -24,6 +25,7 @@ const {
 } = require('../services/project-service');
 
 const router = express.Router();
+const AUTH_PROVIDERS = new Set(['codex', 'claude']);
 
 function isPathInsideRoot(candidatePath, rootPath) {
   const absCandidate = path.resolve(candidatePath);
@@ -149,7 +151,7 @@ router.get('/auth-status', async (req, res) => {
       ? req.query.provider.trim()
       : 'codex';
 
-  if (provider !== 'codex') {
+  if (!AUTH_PROVIDERS.has(provider)) {
     res.status(400).json({
       error: 'Validation error',
       details: 'provider is not supported for auth status.',
@@ -179,6 +181,7 @@ router.get('/auth-status', async (req, res) => {
           provider,
           status: 'cli_missing',
           details: details || 'CLI executable not found in PATH.',
+          source: provider === 'claude' ? 'claude auth status' : 'codex login status',
         });
         return;
       }
@@ -187,11 +190,184 @@ router.get('/auth-status', async (req, res) => {
         provider,
         status: 'error',
         details: details || 'CLI status check failed.',
+        source: provider === 'claude' ? 'claude auth status' : 'codex login status',
       });
       return;
     }
 
     handleError(res, error, 'Failed to check auth status:');
+  }
+});
+
+router.post('/auth/logout', async (req, res) => {
+  const provider =
+    req.body && typeof req.body.provider === 'string' && req.body.provider.trim().length > 0
+      ? req.body.provider.trim()
+      : 'codex';
+
+  if (!AUTH_PROVIDERS.has(provider)) {
+    res.status(400).json({
+      error: 'Validation error',
+      details: 'provider is not supported for auth logout.',
+    });
+    return;
+  }
+
+  try {
+    const result = await logoutAuth(provider);
+    res.status(200).json({
+      provider,
+      ...result,
+    });
+  } catch (error) {
+    if (error && error.code === 'UNSUPPORTED_PROVIDER') {
+      res.status(400).json({
+        error: 'Validation error',
+        details: error.message || 'provider is not supported for auth logout.',
+      });
+      return;
+    }
+
+    if (error && error.isCliError) {
+      const details = String(error.details || '');
+      if (/not found/i.test(details) || /not recognized/i.test(details) || /PATH/i.test(details)) {
+        res.status(200).json({
+          provider,
+          status: 'cli_missing',
+          details: details || 'CLI executable not found in PATH.',
+          source: provider === 'claude' ? 'claude auth logout' : 'codex logout',
+        });
+        return;
+      }
+
+      res.status(200).json({
+        provider,
+        status: 'error',
+        details: details || 'CLI logout failed.',
+        source: provider === 'claude' ? 'claude auth logout' : 'codex logout',
+      });
+      return;
+    }
+
+    handleError(res, error, 'Failed to logout auth:');
+  }
+});
+
+router.post('/auth/login', async (req, res) => {
+  const provider =
+    req.body && typeof req.body.provider === 'string' && req.body.provider.trim().length > 0
+      ? req.body.provider.trim()
+      : 'claude';
+
+  if (provider !== 'claude') {
+    res.status(400).json({
+      error: 'Validation error',
+      details: 'provider is not supported for interactive auth login.',
+    });
+    return;
+  }
+
+  try {
+    const result = await startAuthLogin(provider);
+    res.status(200).json({
+      provider,
+      ...result,
+    });
+  } catch (error) {
+    if (error && error.code === 'UNSUPPORTED_PROVIDER') {
+      res.status(400).json({
+        error: 'Validation error',
+        details: error.message || 'provider is not supported for interactive auth login.',
+      });
+      return;
+    }
+
+    if (error && error.isCliError) {
+      const details = String(error.details || '');
+      if (/not found/i.test(details) || /not recognized/i.test(details) || /PATH/i.test(details)) {
+        res.status(200).json({
+          provider,
+          status: 'cli_missing',
+          details: details || 'CLI executable not found in PATH.',
+          source: 'claude auth login',
+          command: 'claude auth login',
+          loginUrl: '',
+        });
+        return;
+      }
+
+      res.status(200).json({
+        provider,
+        status: 'error',
+        details: details || 'CLI login failed.',
+        source: 'claude auth login',
+        command: 'claude auth login',
+        loginUrl: '',
+      });
+      return;
+    }
+
+    handleError(res, error, 'Failed to start auth login:');
+  }
+});
+
+router.post('/auth/device', async (req, res) => {
+  const provider =
+    req.body && typeof req.body.provider === 'string' && req.body.provider.trim().length > 0
+      ? req.body.provider.trim()
+      : 'codex';
+
+  if (provider !== 'codex') {
+    res.status(400).json({
+      error: 'Validation error',
+      details: 'provider is not supported for device auth.',
+    });
+    return;
+  }
+
+  try {
+    const result = await startDeviceAuth(provider);
+    res.status(200).json({
+      provider,
+      ...result,
+    });
+  } catch (error) {
+    if (error && error.code === 'UNSUPPORTED_PROVIDER') {
+      res.status(400).json({
+        error: 'Validation error',
+        details: error.message || 'provider is not supported for device auth.',
+      });
+      return;
+    }
+
+    if (error && error.isCliError) {
+      const details = String(error.details || '');
+      if (/not found/i.test(details) || /not recognized/i.test(details) || /PATH/i.test(details)) {
+        res.status(200).json({
+          provider,
+          status: 'cli_missing',
+          details: details || 'CLI executable not found in PATH.',
+          source: 'codex login --device-auth',
+          command: 'codex login --device-auth',
+          verificationUrl: '',
+          userCode: '',
+        });
+        return;
+      }
+
+      res.status(200).json({
+        provider,
+        status: 'error',
+        details: details || 'CLI device auth failed.',
+        source: 'codex login --device-auth',
+        command: 'codex login --device-auth',
+        verificationUrl: '',
+        userCode: '',
+      });
+      return;
+    }
+
+    handleError(res, error, 'Failed to start device auth:');
   }
 });
 
@@ -323,6 +499,31 @@ router.get('/projects/:projectId/sessions/:sessionId', async (req, res) => {
     res.status(200).json({ session });
   } catch (error) {
     handleError(res, error, 'Failed to load session:');
+  }
+});
+
+router.get('/projects/:projectId/memory', async (req, res) => {
+  try {
+    const scope = typeof req.query.scope === 'string' ? req.query.scope : 'project';
+    const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : '';
+    const memory = await getMemory(req.params.projectId, scope, sessionId);
+    res.status(200).json({ memory });
+  } catch (error) {
+    handleError(res, error, 'Failed to load memory:');
+  }
+});
+
+router.put('/projects/:projectId/memory', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const memory = await setMemory(req.params.projectId, {
+      scope: body.scope,
+      sessionId: body.sessionId,
+      content: body.content,
+    });
+    res.status(200).json({ memory });
+  } catch (error) {
+    handleError(res, error, 'Failed to save memory:');
   }
 });
 

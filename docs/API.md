@@ -161,7 +161,7 @@ Validation error `400` (provider invalid):
 { "error": "Validation error", "details": "aiPrimary must be a supported provider." }
 ```
 
-### `GET /api/auth-status?provider=codex`
+### `GET /api/auth-status?provider=codex|claude`
 
 Success `200`:
 
@@ -185,8 +185,38 @@ Possible `status` values:
 - `error`
 
 Notes:
-- Backend runs `printf "/status\n" | codex`.
-- Jika output mengandung `unrecognized subcommand/unknown subcommand/unexpected argument`, status menjadi `error`.
+- Untuk Codex backend menjalankan `codex login status`, lalu fallback ke file `auth.json` jika environment tidak bisa membaca status CLI secara normal.
+- Untuk Claude backend menjalankan `claude auth status`, lalu fallback ke file auth lokal Claude jika perlu.
+- Login provider tetap wajib lewat CLI di server, bukan inject token dari aplikasi.
+
+### `POST /api/auth/login`
+
+Memulai flow login CLI dari backend untuk provider yang mendukung login interaktif via web. Saat ini hanya `claude`.
+
+Request:
+
+```json
+{
+  "provider": "claude"
+}
+```
+
+Success `200`:
+
+```json
+{
+  "provider": "claude",
+  "status": "pending",
+  "details": "Claude login sudah dimulai.",
+  "source": "claude auth login",
+  "command": "claude auth login",
+  "loginUrl": "https://..."
+}
+```
+
+Catatan:
+- Jika CLI tidak mengembalikan URL, `loginUrl` akan kosong dan user perlu lanjutkan flow di browser/terminal server lalu klik refresh status di Settings.
+- Jika flow sudah berjalan, endpoint ini akan mengembalikan snapshot status login Claude yang aktif.
 
 Contoh update master root:
 
@@ -403,6 +433,49 @@ Success `200`:
 }
 ```
 
+### `GET /api/projects/:projectId/memory`
+
+Query:
+
+- `scope`: `project` atau `session` (default `project`)
+- `sessionId`: wajib jika `scope=session`
+
+Success `200`:
+
+```json
+{
+  "memory": {
+    "id": "project::cli-agent-node--www-wwwroot-cli-agent-node",
+    "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
+    "sessionId": "",
+    "scope": "project",
+    "content": "Prefer paket tetap ringan dan tetap pakai SQLite lokal.",
+    "createdAt": "2026-03-13T10:00:00.000Z",
+    "updatedAt": "2026-03-13T10:05:00.000Z"
+  }
+}
+```
+
+Jika memory belum ada, endpoint tetap mengembalikan object kosong dengan `content: ""`.
+
+### `PUT /api/projects/:projectId/memory`
+
+Request:
+
+```json
+{
+  "scope": "session",
+  "sessionId": "farm.asrijaya.com::a1b2c3",
+  "content": "Session ini fokus refactor queue tanpa ubah UI."
+}
+```
+
+Catatan:
+
+- `scope=project`: untuk memory penting lintas session dalam satu project.
+- `scope=session`: untuk konteks yang hanya relevan di session tertentu.
+- `content` kosong diizinkan jika ingin membersihkan isi memory tanpa menghapus row.
+
 ## 9) Ask di Dalam Session
 
 ### `POST /api/projects/:projectId/sessions/:sessionId/ask`
@@ -425,6 +498,7 @@ Catatan:
 - `model`, `reasoning`, `mode` opsional, disimpan ke `session.preferences`.
 - Message user akan tetap disimpan ke session walaupun provider gagal.
 - Request ini menjalankan CLI provider dengan `cwd` di folder project aktif (`project.projectPath`).
+- Jika ada, memory `project` dan `session` akan ditambahkan ke prompt provider sebagai konteks tersimpan.
 - Jika primary gagal dan fallback diset di settings, server akan mencoba fallback.
 - Nilai `reasoning`: `low`, `medium`, `high`, `xhigh` (default `medium`).
 - Jika prompt diawali command `/status`, backend skip provider call dan mengembalikan status Codex saat ini (provider response bertipe `system` di message session).

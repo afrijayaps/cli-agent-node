@@ -13,10 +13,49 @@ const els = {
   loginStatusDot: document.getElementById('loginStatusDot'),
   loginStatusText: document.getElementById('loginStatusText'),
   loginStatusHint: document.getElementById('loginStatusHint'),
+  loginStatusEmail: document.getElementById('loginStatusEmail'),
+  refreshLoginStatusButton: document.getElementById('refreshLoginStatusButton'),
+  startDeviceAuthButton: document.getElementById('startDeviceAuthButton'),
+  logoutCodexButton: document.getElementById('logoutCodexButton'),
+  claudeStatusDot: document.getElementById('claudeStatusDot'),
+  claudeStatusText: document.getElementById('claudeStatusText'),
+  claudeStatusHint: document.getElementById('claudeStatusHint'),
+  claudeStatusEmail: document.getElementById('claudeStatusEmail'),
+  refreshClaudeStatusButton: document.getElementById('refreshClaudeStatusButton'),
+  startClaudeLoginButton: document.getElementById('startClaudeLoginButton'),
+  logoutClaudeButton: document.getElementById('logoutClaudeButton'),
+  claudeLoginResult: document.getElementById('claudeLoginResult'),
+  claudeLoginLinkWrap: document.getElementById('claudeLoginLinkWrap'),
+  claudeLoginLink: document.getElementById('claudeLoginLink'),
+  deviceAuthResult: document.getElementById('deviceAuthResult'),
+  deviceAuthLinkWrap: document.getElementById('deviceAuthLinkWrap'),
+  deviceAuthLink: document.getElementById('deviceAuthLink'),
+  deviceAuthCodeWrap: document.getElementById('deviceAuthCodeWrap'),
+  deviceAuthCode: document.getElementById('deviceAuthCode'),
+  copyDeviceAuthCodeButton: document.getElementById('copyDeviceAuthCodeButton'),
   systemPromptInput: document.getElementById('systemPromptInput'),
   systemPromptSaveButton: document.getElementById('systemPromptSaveButton'),
   stopAllJobsButton: document.getElementById('stopAllJobsButton'),
   restartServerButton: document.getElementById('restartServerButton'),
+};
+
+const AUTH_UI = {
+  codex: {
+    label: 'Codex',
+    dot: els.loginStatusDot,
+    text: els.loginStatusText,
+    hint: els.loginStatusHint,
+    email: els.loginStatusEmail,
+    loginCommand: 'codex login --device-auth',
+  },
+  claude: {
+    label: 'Claude',
+    dot: els.claudeStatusDot,
+    text: els.claudeStatusText,
+    hint: els.claudeStatusHint,
+    email: els.claudeStatusEmail,
+    loginCommand: 'claude auth login',
+  },
 };
 
 const state = {
@@ -122,94 +161,365 @@ function renderAiManager() {
   els.aiFallbackSelect.value = state.aiFallback || '';
 }
 
-function setLoginStatus(status, details = '') {
-  if (!els.loginStatusDot || !els.loginStatusText || !els.loginStatusHint) {
+function getAuthUi(provider = 'codex') {
+  return AUTH_UI[provider] || null;
+}
+
+function getProviderLoginCommand(provider = 'codex') {
+  const authUi = getAuthUi(provider);
+  return authUi ? authUi.loginCommand : 'codex login --device-auth';
+}
+
+function setLoginStatus(provider = 'codex', status, details = '') {
+  const authUi = getAuthUi(provider);
+  if (!authUi || !authUi.dot || !authUi.text || !authUi.hint || !authUi.email) {
     return;
   }
 
-  els.loginStatusDot.className = 'status-dot';
-  els.loginStatusText.textContent = 'Codex: unknown';
-  els.loginStatusHint.textContent = details || '';
+  authUi.dot.className = 'status-dot';
+  authUi.text.textContent = `${authUi.label}: unknown`;
+  authUi.hint.textContent = details || '';
+  authUi.email.textContent = 'Email: -';
 
   if (status === 'logged_in') {
-    els.loginStatusDot.classList.add('ok');
-    els.loginStatusText.textContent = 'Codex: Logged in';
+    authUi.dot.classList.add('ok');
+    authUi.text.textContent = `${authUi.label}: Logged in`;
     return;
   }
 
   if (status === 'logged_out') {
-    els.loginStatusDot.classList.add('warn');
-    els.loginStatusText.textContent = 'Codex: Logged out';
+    authUi.dot.classList.add('warn');
+    authUi.text.textContent = `${authUi.label}: Belum login`;
     return;
   }
 
   if (status === 'cli_missing') {
-    els.loginStatusDot.classList.add('error');
-    els.loginStatusText.textContent = 'Codex: CLI not found';
+    authUi.dot.classList.add('error');
+    authUi.text.textContent = `${authUi.label}: CLI not found`;
     return;
   }
 
   if (status === 'error') {
-    els.loginStatusDot.classList.add('error');
-    els.loginStatusText.textContent = 'Codex: Error';
+    authUi.dot.classList.add('error');
+    authUi.text.textContent = `${authUi.label}: Error`;
     return;
   }
 
-  els.loginStatusDot.classList.add('unknown');
+  authUi.dot.classList.add('unknown');
 }
 
-async function loadLoginStatus() {
-  if (!els.loginStatusDot || !els.loginStatusText || !els.loginStatusHint) {
+function resolveEmail(result = {}) {
+  if (result && typeof result.email === 'string' && result.email.trim().length > 0) {
+    return result.email.trim();
+  }
+  if (result && typeof result.account === 'string') {
+    const emailMatch = result.account.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+    if (emailMatch) {
+      return emailMatch[0];
+    }
+  }
+  return '';
+}
+
+function renderDeviceAuthOutput(result = {}) {
+  const details = result && typeof result.details === 'string' ? result.details.trim() : '';
+  const link = result && typeof result.verificationUrl === 'string' ? result.verificationUrl.trim() : '';
+  const code = result && typeof result.userCode === 'string' ? result.userCode.trim() : '';
+
+  if (els.deviceAuthResult) {
+    els.deviceAuthResult.style.display = details ? 'block' : 'none';
+    els.deviceAuthResult.textContent = details;
+  }
+
+  if (els.deviceAuthLinkWrap && els.deviceAuthLink) {
+    els.deviceAuthLinkWrap.style.display = link ? 'block' : 'none';
+    els.deviceAuthLink.href = link || '#';
+    els.deviceAuthLink.textContent = link;
+  }
+
+  if (els.deviceAuthCodeWrap && els.deviceAuthCode) {
+    els.deviceAuthCodeWrap.style.display = code ? 'block' : 'none';
+    els.deviceAuthCode.textContent = code;
+  }
+}
+
+function renderClaudeLoginOutput(result = {}) {
+  const details = result && typeof result.details === 'string' ? result.details.trim() : '';
+  const link =
+    result &&
+    typeof result.loginUrl === 'string' &&
+    result.loginUrl.trim().length > 0
+      ? result.loginUrl.trim()
+      : '';
+
+  if (els.claudeLoginResult) {
+    els.claudeLoginResult.style.display = details ? 'block' : 'none';
+    els.claudeLoginResult.textContent = details;
+  }
+
+  if (els.claudeLoginLinkWrap && els.claudeLoginLink) {
+    els.claudeLoginLinkWrap.style.display = link ? 'block' : 'none';
+    els.claudeLoginLink.href = link || '#';
+    els.claudeLoginLink.textContent = link;
+  }
+}
+
+function isGenericLoggedOutDetails(details = '') {
+  return /^(not authenticated|auth file missing|auth file empty|not authenticated \(auth\.json\))$/i.test(
+    String(details || '').trim(),
+  );
+}
+
+function buildLoginHint(provider = 'codex', result = {}) {
+  const status = result && result.status ? result.status : 'unknown';
+  const details = result && typeof result.details === 'string' ? result.details.trim() : '';
+  const metaParts = [];
+
+  if (result && typeof result.account === 'string' && result.account.trim().length > 0) {
+    metaParts.push(`Account: ${result.account.trim()}`);
+  }
+  if (result && typeof result.model === 'string' && result.model.trim().length > 0) {
+    metaParts.push(`Model: ${result.model.trim()}`);
+  }
+  if (result && typeof result.session === 'string' && result.session.trim().length > 0) {
+    metaParts.push(`Session: ${result.session.trim()}`);
+  }
+  if (result && typeof result.limit5h === 'string' && result.limit5h.trim().length > 0) {
+    metaParts.push(`5h: ${result.limit5h.trim()}`);
+  }
+  if (
+    result &&
+    typeof result.limitWeekly === 'string' &&
+    result.limitWeekly.trim().length > 0
+  ) {
+    metaParts.push(`Weekly: ${result.limitWeekly.trim()}`);
+  }
+  if (result && typeof result.authMethod === 'string' && result.authMethod.trim().length > 0) {
+    metaParts.push(`Auth: ${result.authMethod.trim()}`);
+  }
+  if (result && typeof result.apiProvider === 'string' && result.apiProvider.trim().length > 0) {
+    metaParts.push(`API: ${result.apiProvider.trim()}`);
+  }
+  if (result && typeof result.orgName === 'string' && result.orgName.trim().length > 0) {
+    metaParts.push(`Org: ${result.orgName.trim()}`);
+  } else if (result && typeof result.orgId === 'string' && result.orgId.trim().length > 0) {
+    metaParts.push(`Org ID: ${result.orgId.trim()}`);
+  }
+  if (
+    result &&
+    typeof result.subscriptionType === 'string' &&
+    result.subscriptionType.trim().length > 0
+  ) {
+    metaParts.push(`Subscription: ${result.subscriptionType.trim()}`);
+  }
+  if (result && typeof result.source === 'string' && result.source.trim().length > 0) {
+    metaParts.push(`Source: ${result.source.trim()}`);
+  }
+
+  if (status === 'logged_out') {
+    const hintParts = [];
+    if (details && !isGenericLoggedOutDetails(details)) {
+      hintParts.push(details);
+    }
+    hintParts.push(`Login ulang via CLI di server: ${getProviderLoginCommand(provider)}`);
+    if (result && typeof result.source === 'string' && result.source.trim().length > 0) {
+      hintParts.push(`Source: ${result.source.trim()}`);
+    }
+    return hintParts.join(' • ');
+  }
+
+  if (metaParts.length > 0) {
+    return metaParts.join(' • ');
+  }
+
+  return details;
+}
+
+async function loadLoginStatus(provider = 'codex') {
+  const authUi = getAuthUi(provider);
+  if (!authUi || !authUi.dot || !authUi.text || !authUi.hint) {
     return;
   }
 
-  setLoginStatus('unknown', 'checking status...');
+  setLoginStatus(provider, 'unknown', 'checking status...');
   try {
-    const result = await api.getAuthStatus('codex');
+    const result = await api.getAuthStatus(provider);
     const status = result && result.status ? result.status : 'unknown';
     const details = result && typeof result.details === 'string' ? result.details : '';
-    const metaParts = [];
-    if (result && typeof result.account === 'string' && result.account.trim().length > 0) {
-      metaParts.push(`Account: ${result.account.trim()}`);
-    }
-    if (result && typeof result.model === 'string' && result.model.trim().length > 0) {
-      metaParts.push(`Model: ${result.model.trim()}`);
-    }
-    if (result && typeof result.session === 'string' && result.session.trim().length > 0) {
-      metaParts.push(`Session: ${result.session.trim()}`);
-    }
-    if (result && typeof result.limit5h === 'string' && result.limit5h.trim().length > 0) {
-      metaParts.push(`5h: ${result.limit5h.trim()}`);
-    }
-    if (
-      result &&
-      typeof result.limitWeekly === 'string' &&
-      result.limitWeekly.trim().length > 0
-    ) {
-      metaParts.push(`Weekly: ${result.limitWeekly.trim()}`);
-    }
-
-    let hint = metaParts.length > 0 ? metaParts.join(' • ') : details;
-    if (!hint || hint.trim().length === 0) {
-      hint = details;
-    }
-    if (status === 'logged_out') {
-      hint = hint
-        ? `${hint} • Login: sudo codex login`
-        : 'Login: sudo codex login';
-    }
+    const email = resolveEmail(result);
+    let hint = buildLoginHint(provider, result);
     if (status === 'error' && /sudo failed/i.test(details)) {
-      hint = 'Login: sudo codex login';
+      hint = `Login ulang via CLI: ${getProviderLoginCommand(provider)}`;
     }
-    if (hint && hint.trim().length > 0) {
-      hint = `${hint} • Checked as root`;
-    } else {
-      hint = 'Checked as root';
+    setLoginStatus(provider, status, hint);
+    if (authUi.email) {
+      authUi.email.textContent = `Email: ${email || '-'}`;
     }
-    setLoginStatus(status, hint);
   } catch (error) {
     const message = error && typeof error.message === 'string' ? error.message : 'status unknown';
-    setLoginStatus('unknown', message);
+    setLoginStatus(provider, 'unknown', message);
+  }
+}
+
+async function refreshLoginStatus(provider = 'codex') {
+  if (state.busy) {
+    return;
+  }
+  const authUi = getAuthUi(provider);
+  const label = authUi ? authUi.label.toLowerCase() : provider;
+  setStatus(`refreshing ${label} status...`);
+  await loadLoginStatus(provider);
+  setStatus('login status updated');
+}
+
+async function logoutProvider(provider = 'codex') {
+  if (state.busy) {
+    return;
+  }
+
+  const authUi = getAuthUi(provider);
+  const label = authUi ? authUi.label : provider;
+  const confirmed = window.confirm(`Logout akun ${label} CLI sekarang?`);
+  if (!confirmed) {
+    return;
+  }
+
+  state.busy = true;
+  setStatus(`logging out ${label.toLowerCase()}...`);
+
+  try {
+    const result = await api.logoutAuth(provider);
+    const details =
+      result && typeof result.details === 'string' && result.details.trim().length > 0
+        ? result.details.trim()
+        : 'logout selesai';
+    setStatus(details);
+    if (provider === 'codex') {
+      renderDeviceAuthOutput({});
+    }
+    if (provider === 'claude') {
+      renderClaudeLoginOutput({});
+    }
+    await loadLoginStatus(provider);
+  } catch (error) {
+    setStatus(error.message || 'failed to logout', true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function startDeviceAuth() {
+  if (state.busy) {
+    return;
+  }
+
+  state.busy = true;
+  setStatus('memulai device auth... nanti muncul link verifikasi.');
+
+  try {
+    const result = await api.startDeviceAuth('codex');
+    renderDeviceAuthOutput(result);
+    if (result && result.status === 'pending') {
+      setStatus('device auth siap. link dan kode verifikasi sudah muncul.');
+    } else if (result && (result.status === 'error' || result.status === 'cli_missing')) {
+      const details =
+        result && typeof result.details === 'string' && result.details.trim().length > 0
+          ? result.details.trim()
+          : 'device auth gagal';
+      setStatus(details, true);
+    } else {
+      setStatus('device auth command selesai');
+    }
+  } catch (error) {
+    renderDeviceAuthOutput({
+      details: error && error.message ? error.message : 'device auth failed',
+    });
+    setStatus(error.message || 'failed to start device auth', true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function startClaudeLogin() {
+  if (state.busy) {
+    return;
+  }
+
+  state.busy = true;
+  setStatus('memulai login Claude...');
+
+  try {
+    const result = await api.startAuthLogin('claude');
+    renderClaudeLoginOutput(result);
+
+    if (result && result.status === 'logged_in') {
+      setStatus('Claude login selesai. status sedang disegarkan...');
+      await loadLoginStatus('claude');
+      setStatus('login Claude selesai');
+    } else if (result && result.status === 'pending') {
+      if (result.loginUrl) {
+        setStatus('login Claude dimulai. buka link login lalu refresh Claude setelah selesai.');
+      } else {
+        setStatus('login Claude dimulai. selesaikan flow di browser/server lalu refresh Claude.');
+      }
+    } else if (result && (result.status === 'error' || result.status === 'cli_missing')) {
+      const details =
+        result && typeof result.details === 'string' && result.details.trim().length > 0
+          ? result.details.trim()
+          : 'login Claude gagal';
+      setStatus(details, true);
+    } else {
+      setStatus('perintah login Claude dijalankan');
+    }
+  } catch (error) {
+    renderClaudeLoginOutput({
+      details: error && error.message ? error.message : 'login Claude gagal',
+    });
+    setStatus(error.message || 'failed to start Claude login', true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function copyDeviceAuthCode() {
+  if (!els.deviceAuthCode) {
+    return;
+  }
+
+  const code = els.deviceAuthCode.textContent ? els.deviceAuthCode.textContent.trim() : '';
+  if (!code) {
+    setStatus('kode device auth belum tersedia', true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(code);
+      setStatus('kode device auth disalin');
+      return;
+    }
+  } catch (_error) {
+    // Fallback di bawah.
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = code;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    const copied = document.execCommand('copy');
+    if (!copied) {
+      throw new Error('copy failed');
+    }
+    setStatus('kode device auth disalin');
+  } catch (_error) {
+    setStatus('gagal copy kode', true);
+  } finally {
+    document.body.removeChild(textarea);
   }
 }
 
@@ -405,7 +715,7 @@ async function init() {
     applyTheme(state.currentTheme);
     renderThemes();
     renderAiManager();
-    await loadLoginStatus();
+    await Promise.all([loadLoginStatus('codex'), loadLoginStatus('claude')]);
     els.masterRootInput.value = state.masterProjectRoot;
     if (els.systemPromptInput) {
       els.systemPromptInput.value = state.systemPrompt;
@@ -427,6 +737,27 @@ if (els.aiFallbackSelect) {
 }
 if (els.aiSaveButton) {
   els.aiSaveButton.addEventListener('click', saveAiManager);
+}
+if (els.refreshLoginStatusButton) {
+  els.refreshLoginStatusButton.addEventListener('click', () => refreshLoginStatus('codex'));
+}
+if (els.startDeviceAuthButton) {
+  els.startDeviceAuthButton.addEventListener('click', startDeviceAuth);
+}
+if (els.logoutCodexButton) {
+  els.logoutCodexButton.addEventListener('click', () => logoutProvider('codex'));
+}
+if (els.refreshClaudeStatusButton) {
+  els.refreshClaudeStatusButton.addEventListener('click', () => refreshLoginStatus('claude'));
+}
+if (els.startClaudeLoginButton) {
+  els.startClaudeLoginButton.addEventListener('click', startClaudeLogin);
+}
+if (els.logoutClaudeButton) {
+  els.logoutClaudeButton.addEventListener('click', () => logoutProvider('claude'));
+}
+if (els.copyDeviceAuthCodeButton) {
+  els.copyDeviceAuthCodeButton.addEventListener('click', copyDeviceAuthCode);
 }
 if (els.systemPromptSaveButton) {
   els.systemPromptSaveButton.addEventListener('click', saveSystemPrompt);

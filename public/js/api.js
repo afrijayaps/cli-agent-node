@@ -120,6 +120,24 @@ export const api = {
     const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
     return request(`/api/auth-status${query}`);
   },
+  logoutAuth(provider = 'codex') {
+    return request('/api/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    });
+  },
+  startAuthLogin(provider = 'claude') {
+    return request('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    });
+  },
+  startDeviceAuth(provider = 'codex') {
+    return request('/api/auth/device', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    });
+  },
   restartServer() {
     return request('/api/restart', {
       method: 'POST',

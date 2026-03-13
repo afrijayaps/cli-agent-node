@@ -2,10 +2,11 @@ const crypto = require('crypto');
 const { AppError } = require('./errors');
 const { providers, isValidProvider, DEFAULT_PROVIDER } = require('../providers');
 const { appendMessages, getSession, getProject, setSessionPreferences } = require('./project-service');
+const { getMemoryContext } = require('./memory-service');
 const { getSettings } = require('./settings-service');
 const { getAuthStatus } = require('./auth-status');
 const { logInfo, logError } = require('./logger');
-const { startJob, endJob } = require('./job-registry');
+const { startJob, endJob, updateJob } = require('./job-registry');
 
 const REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh'];
 const MODE_LEVELS = ['normal', 'plan'];
@@ -135,6 +136,47 @@ function composePrompt(prompt, settings, reasoning, mode) {
   return blocks.join('\n\n');
 }
 
+function buildMemoryBlock(memoryContext) {
+  if (!memoryContext || typeof memoryContext !== 'object') {
+    return '';
+  }
+
+  const blocks = [];
+  const projectMemory =
+    memoryContext.project && typeof memoryContext.project.content === 'string'
+      ? memoryContext.project.content.trim()
+      : '';
+  const sessionMemory =
+    memoryContext.session && typeof memoryContext.session.content === 'string'
+      ? memoryContext.session.content.trim()
+      : '';
+
+  if (projectMemory) {
+    blocks.push(`Project memory:\n${projectMemory}`);
+  }
+
+  if (sessionMemory) {
+    blocks.push(`Session memory:\n${sessionMemory}`);
+  }
+
+  if (blocks.length === 0) {
+    return '';
+  }
+
+  return `Use this stored context when relevant.\n\n${blocks.join('\n\n')}`;
+}
+
+function composePromptWithMemory(prompt, settings, reasoning, mode, memoryContext) {
+  const basePrompt = composePrompt(prompt, settings, reasoning, mode);
+  const memoryBlock = buildMemoryBlock(memoryContext);
+
+  if (!memoryBlock) {
+    return basePrompt;
+  }
+
+  return `${memoryBlock}\n\n${basePrompt}`;
+}
+
 function hashPrompt(prompt) {
   return crypto.createHash('sha256').update(String(prompt)).digest('hex');
 }
@@ -165,6 +207,7 @@ function normalizeProviderResult(result) {
     return {
       text: result,
       progress: [],
+      progressPercent: null,
     };
   }
 
@@ -172,6 +215,7 @@ function normalizeProviderResult(result) {
     return {
       text: '',
       progress: [],
+      progressPercent: null,
     };
   }
 
@@ -180,6 +224,12 @@ function normalizeProviderResult(result) {
     progress: Array.isArray(result.progress)
       ? result.progress.filter((item) => typeof item === 'string' && item.trim().length > 0)
       : [],
+    progressPercent:
+      Number.isFinite(result.progressPercent) &&
+      result.progressPercent >= 0 &&
+      result.progressPercent <= 100
+        ? result.progressPercent
+        : null,
   };
 }
 
@@ -268,6 +318,8 @@ async function askProvider({ provider, prompt, model, reasoning, mode }) {
     reasoning: normalized.reasoning,
     mode: normalized.mode,
     promptChars: normalized.prompt.length,
+    progress: [],
+    progressPercent: null,
     cancel: (reason) => {
       if (abortController) {
         abortController.abort(reason);
@@ -289,6 +341,13 @@ async function askProvider({ provider, prompt, model, reasoning, mode }) {
       model: normalized.model,
       reasoning: normalized.reasoning,
       signal: abortController ? abortController.signal : undefined,
+      onProgress: ({ lines, percent }) => {
+        updateJob(jobId, {
+          progress: Array.isArray(lines) ? lines.slice(-8) : [],
+          progressPercent:
+            Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent : null,
+        });
+      },
     });
     const normalizedResult = normalizeProviderResult(result);
     logInfo('ask_provider_success', {
@@ -306,6 +365,14 @@ async function askProvider({ provider, prompt, model, reasoning, mode }) {
           model: normalized.model,
           reasoning: normalized.reasoning,
           signal: abortController ? abortController.signal : undefined,
+          onProgress: ({ lines, percent }) => {
+            updateJob(jobId, {
+              provider: fallbackProvider,
+              progress: Array.isArray(lines) ? lines.slice(-8) : [],
+              progressPercent:
+                Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent : null,
+            });
+          },
         });
         const normalizedResult = normalizeProviderResult(result);
         logInfo('ask_provider_fallback_success', {
@@ -360,7 +427,14 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
   const requestPromise = (async () => {
   const fallbackProvider = resolveFallbackProvider(settings, normalized.provider);
   const project = await getProject(projectId);
-  const effectivePrompt = composePrompt(normalized.prompt, settings, normalized.reasoning, normalized.mode);
+  const memoryContext = await getMemoryContext(projectId, sessionId);
+  const effectivePrompt = composePromptWithMemory(
+    normalized.prompt,
+    settings,
+    normalized.reasoning,
+    normalized.mode,
+    memoryContext,
+  );
 
   await appendMessages(projectId, sessionId, [
     {
@@ -396,6 +470,7 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     return {
       result: statusText,
       progress: [],
+      progressPercent: null,
       session: await getSession(projectId, sessionId),
       provider: 'system',
       fallbackUsed: false,
@@ -414,6 +489,8 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     reasoning: normalized.reasoning,
     mode: normalized.mode,
     promptChars: normalized.prompt.length,
+    progress: [],
+    progressPercent: null,
     cancel: (reason) => {
       if (abortController) {
         abortController.abort(reason);
@@ -435,12 +512,20 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
   let result;
   let usedProvider = normalized.provider;
   let progress = [];
+  let progressPercent = null;
   try {
     result = await providers[normalized.provider].ask(effectivePrompt, {
       cwd: project.projectPath,
       model: normalized.model,
       reasoning: normalized.reasoning,
       signal: abortController ? abortController.signal : undefined,
+      onProgress: ({ lines, percent }) => {
+        updateJob(jobId, {
+          progress: Array.isArray(lines) ? lines.slice(-8) : [],
+          progressPercent:
+            Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent : null,
+        });
+      },
     });
   } catch (error) {
     if (error && error.isAbortError) {
@@ -453,6 +538,14 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
           model: normalized.model,
           reasoning: normalized.reasoning,
           signal: abortController ? abortController.signal : undefined,
+          onProgress: ({ lines, percent }) => {
+            updateJob(jobId, {
+              provider: fallbackProvider,
+              progress: Array.isArray(lines) ? lines.slice(-8) : [],
+              progressPercent:
+                Number.isFinite(percent) && percent >= 0 && percent <= 100 ? percent : null,
+            });
+          },
         });
         usedProvider = fallbackProvider;
       } catch (fallbackError) {
@@ -485,6 +578,7 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
   const normalizedResult = normalizeProviderResult(result);
   const textResult = normalizedResult.text;
   progress = normalizedResult.progress;
+  progressPercent = normalizedResult.progressPercent;
 
   await appendMessages(projectId, sessionId, [
     {
@@ -500,6 +594,7 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     return {
       result: textResult,
       progress,
+      progressPercent,
       session: await getSession(projectId, sessionId),
       provider: usedProvider,
       fallbackUsed: usedProvider !== normalized.provider,

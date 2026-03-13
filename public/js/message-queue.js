@@ -48,6 +48,16 @@ export function createMessageQueue({ onChange } = {}) {
     emitChange();
   }
 
+  function removeById(id) {
+    const index = items.findIndex((item) => item && item.id === id);
+    if (index < 0) {
+      return null;
+    }
+    const [removed] = items.splice(index, 1);
+    emitChange();
+    return removed || null;
+  }
+
   return {
     enqueue,
     dequeue,
@@ -55,6 +65,7 @@ export function createMessageQueue({ onChange } = {}) {
     list() {
       return items.map((item) => ({ ...item }));
     },
+    removeById,
     clear,
   };
 }

@@ -64,10 +64,24 @@ function bindCopyButtons(box, codeParts, setStatus) {
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(part.code);
-          setStatus('code copied');
         } else {
-          throw new Error('clipboard unavailable');
+          const helper = document.createElement('textarea');
+          helper.value = part.code;
+          helper.setAttribute('readonly', '');
+          helper.style.position = 'fixed';
+          helper.style.top = '-9999px';
+          helper.style.opacity = '0';
+          document.body.appendChild(helper);
+          helper.focus();
+          helper.select();
+          helper.setSelectionRange(0, helper.value.length);
+          const copied = document.execCommand('copy');
+          document.body.removeChild(helper);
+          if (!copied) {
+            throw new Error('clipboard unavailable');
+          }
         }
+        setStatus('code copied');
       } catch (_error) {
         setStatus('failed to copy code', true);
       }

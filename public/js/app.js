@@ -34,6 +34,9 @@ const els = {
   processInline: document.getElementById('processInline'),
   statusText: document.getElementById('statusText'),
   queueInfo: document.getElementById('queueInfo'),
+  queuePopover: document.getElementById('queuePopover'),
+  queuePopoverBody: document.getElementById('queuePopoverBody'),
+  queuePopoverClose: document.getElementById('queuePopoverClose'),
   jobIndicator: document.getElementById('jobIndicator'),
   jobCount: document.getElementById('jobCount'),
   jobsPopover: document.getElementById('jobsPopover'),
@@ -65,6 +68,7 @@ const state = {
     label: '',
     startedAt: 0,
     elapsedMs: 0,
+    progressPercent: null,
     isError: false,
     visible: false,
     exiting: false,
@@ -81,6 +85,7 @@ const state = {
   chatWarning: null,
   busy: false,
   queueSize: 0,
+  queuePopoverOpen: false,
   jobsCount: 0,
   jobs: [],
   jobsTimer: null,
@@ -103,6 +108,8 @@ const serverAwaitingBySession = new Map();
 const abortControllersBySession = new Map();
 const inflightPromptKeys = new Map();
 const sessionDomCache = new Map();
+const backgroundSessionCache = new Map();
+const sessionRefreshInFlight = new Set();
 
 const CHAT_WINDOW_SIZE = 80;
 const CHAT_WINDOW_STEP = 50;
@@ -111,6 +118,46 @@ const COMPOSER_COLLAPSE_THRESHOLD = 64;
 
 let composerCollapsed = false;
 let composerInputFocused = false;
+
+function getUrlState() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return {
+      projectId: normalizeText(params.get('project')),
+      sessionId: normalizeText(params.get('session')),
+    };
+  } catch (_error) {
+    return { projectId: '', sessionId: '' };
+  }
+}
+
+function replaceUrlState(projectId, sessionId = '') {
+  if (typeof window === 'undefined' || !window.history || !window.location) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  const nextProjectId = normalizeText(projectId);
+  const nextSessionId = normalizeText(sessionId);
+
+  if (nextProjectId) {
+    url.searchParams.set('project', nextProjectId);
+  } else {
+    url.searchParams.delete('project');
+  }
+
+  if (nextSessionId) {
+    url.searchParams.set('session', nextSessionId);
+  } else {
+    url.searchParams.delete('session');
+  }
+
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.replaceState({}, '', nextUrl);
+  }
+}
 
 function setComposerCollapsed(collapsed) {
   if (composerCollapsed === collapsed || !els.askForm) return;
@@ -379,9 +426,10 @@ function setAbortController(projectId, sessionId, controller) {
 }
 
 function setServerAwaitingFromJobs(jobs) {
+  const previousKeys = new Set(serverAwaitingBySession.keys());
   serverAwaitingBySession.clear();
   if (!Array.isArray(jobs)) {
-    return;
+    return [...previousKeys];
   }
   jobs.forEach((job) => {
     if (!job || job.type !== 'session') {
@@ -392,6 +440,27 @@ function setServerAwaitingFromJobs(jobs) {
       serverAwaitingBySession.set(key, true);
     }
   });
+
+  return [...previousKeys].filter((key) => !serverAwaitingBySession.has(key));
+}
+
+function parseQueueKey(key) {
+  if (typeof key !== 'string') {
+    return null;
+  }
+
+  const separatorIndex = key.indexOf('::');
+  if (separatorIndex <= 0) {
+    return null;
+  }
+
+  const projectId = key.slice(0, separatorIndex);
+  const sessionId = key.slice(separatorIndex + 2);
+  if (!projectId || !sessionId) {
+    return null;
+  }
+
+  return { projectId, sessionId };
 }
 
 function isActiveAwaiting() {
@@ -501,6 +570,10 @@ function isMobileViewport() {
   return window.matchMedia('(max-width: 980px)').matches;
 }
 
+function isMobilePanelOpen() {
+  return isMobileViewport() && document.body.classList.contains('panel-open');
+}
+
 function openMobilePanel() {
   if (!isMobileViewport()) {
     return;
@@ -594,6 +667,53 @@ function formatJobMeta(job) {
   return parts.join(' • ');
 }
 
+async function navigateToJob(job) {
+  if (!job || typeof job !== 'object') {
+    return;
+  }
+
+  const projectId = normalizeText(job.projectId);
+  const sessionId = normalizeText(job.sessionId);
+  if (!projectId || !sessionId) {
+    setStatus('job ini tidak punya target session', true);
+    return;
+  }
+
+  const projectExists = state.projects.some((project) => project && project.id === projectId);
+  if (!projectExists) {
+    setStatus(`project tujuan tidak ditemukan: ${projectId}`, true);
+    return;
+  }
+
+  toggleJobsPopover(false);
+  toggleQueuePopover(false);
+  state.chatWarning = null;
+
+  if (state.activeProjectId !== projectId) {
+    state.activeProjectId = projectId;
+    localStorage.setItem('activeProjectId', projectId);
+    if (els.projectSelect) {
+      els.projectSelect.value = projectId;
+    }
+    await loadSessions(projectId, { autoSelect: false, useStored: false });
+  }
+
+  const targetSession = state.sessions.find((session) => session && session.id === sessionId);
+  if (!targetSession) {
+    setStatus(`session tujuan tidak ditemukan: ${sessionId}`, true);
+    renderHeader();
+    renderMessages();
+    return;
+  }
+
+  if (state.activeSessionId !== sessionId || !state.activeSession) {
+    await onSessionSelect(sessionId);
+  } else {
+    renderHeader();
+    renderMessages();
+  }
+}
+
 function renderJobsPopover() {
   if (!els.jobsPopover || !els.jobsPopoverBody) {
     return;
@@ -628,9 +748,15 @@ function renderJobsPopover() {
 
   const frag = document.createDocumentFragment();
   jobs.forEach((job) => {
-    const row = document.createElement('div');
+    const row = document.createElement('button');
+    row.type = 'button';
     row.className = 'jobs-row';
     row.dataset.jobKey = `${job.projectId}|${job.sessionId}|${job.status}`;
+    row.title = 'Buka project/session tujuan';
+    row.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await navigateToJob(job);
+    });
 
     const title = document.createElement('div');
     title.className = 'jobs-title';
@@ -652,6 +778,9 @@ function toggleJobsPopover(forceOpen) {
   }
   const next = typeof forceOpen === 'boolean' ? forceOpen : !state.jobsPopoverOpen;
   state.jobsPopoverOpen = next;
+  if (next) {
+    toggleQueuePopover(false);
+  }
   renderJobsPopover();
 }
 
@@ -841,6 +970,74 @@ function refreshSessionRuntimeIndicators() {
   });
 }
 
+function updateSessionSummary(projectId, session) {
+  if (!session || projectId !== state.activeProjectId || !Array.isArray(state.sessions)) {
+    return;
+  }
+
+  const index = state.sessions.findIndex((entry) => entry && entry.id === session.id);
+  if (index < 0) {
+    return;
+  }
+
+  const current = state.sessions[index];
+  const next = { ...current };
+  if (typeof session.title === 'string' && session.title.trim()) {
+    next.title = session.title;
+  }
+  if (typeof session.updatedAt === 'string' && session.updatedAt.trim()) {
+    next.updatedAt = session.updatedAt;
+  }
+  if (Array.isArray(session.messages)) {
+    next.messageCount = session.messages.length;
+  }
+
+  state.sessions[index] = next;
+}
+
+async function refreshSessionByKey(projectId, sessionId) {
+  const key = getQueueKey(projectId, sessionId);
+  if (!key || sessionRefreshInFlight.has(key)) {
+    return;
+  }
+
+  sessionRefreshInFlight.add(key);
+  try {
+    const data = await api.getSession(projectId, sessionId);
+    const session = data && data.session ? data.session : null;
+    if (!session) {
+      return;
+    }
+
+    const isActiveProject = projectId === state.activeProjectId;
+    const isActiveSession = isActiveProject && sessionId === state.activeSessionId;
+
+    if (isActiveSession) {
+      state.activeSession = session;
+      applySessionPreferences(state.activeSession);
+      renderHeader();
+      renderMessages();
+      const latestAssistant = Array.isArray(session.messages)
+        ? [...session.messages].reverse().find((item) => item.role === 'assistant')
+        : null;
+      scheduleAssistantFlash(latestAssistant && latestAssistant.id ? latestAssistant.id : '');
+      return;
+    }
+
+    if (isActiveProject) {
+      updateSessionSummary(projectId, session);
+      refreshSessionRuntimeIndicators();
+      return;
+    }
+
+    backgroundSessionCache.set(key, session);
+  } catch (_error) {
+    // Silent fail: background refresh shouldn't block UI.
+  } finally {
+    sessionRefreshInFlight.delete(key);
+  }
+}
+
 async function loadJobsIndicator() {
   try {
     const data = await api.getJobs();
@@ -848,11 +1045,24 @@ async function loadJobsIndicator() {
     const count = typeof data.count === 'number' ? data.count : jobs.length;
     state.jobs = jobs;
     state.jobsCount = count;
-    setServerAwaitingFromJobs(jobs);
-    syncProcessFromJobs();
+    const releasedQueueKeys = setServerAwaitingFromJobs(jobs);
+    const processChanged = syncProcessFromJobs();
     renderJobsIndicator();
     renderJobsPopover();
     refreshSessionRuntimeIndicators();
+    if (processChanged) {
+      renderMessages();
+    }
+    releasedQueueKeys.forEach((key) => {
+      const parts = parseQueueKey(key);
+      if (!parts) {
+        return;
+      }
+      if (!localAwaitingBySession.has(key)) {
+        void refreshSessionByKey(parts.projectId, parts.sessionId);
+      }
+      void drainPromptQueue(parts.projectId, parts.sessionId);
+    });
   } catch (_error) {
     // Ignore polling errors.
   }
@@ -878,10 +1088,171 @@ function updateQueueInfo() {
   if (total > 0) {
     els.queueInfo.hidden = false;
     els.queueInfo.textContent = `Queue: ${total}`;
+    els.queueInfo.setAttribute('aria-label', `Buka daftar antrean, ${total} item`);
   } else {
+    toggleQueuePopover(false);
     els.queueInfo.hidden = true;
     els.queueInfo.textContent = '';
+    els.queueInfo.setAttribute('aria-label', 'Buka daftar antrean');
   }
+  if (state.queuePopoverOpen) {
+    renderQueuePopover();
+  }
+}
+
+function getActiveQueueItems() {
+  const entry = getQueueState(state.activeProjectId, state.activeSessionId);
+  return entry ? entry.queue.list() : [];
+}
+
+function buildQueueMeta(job, index) {
+  const parts = [`#${index + 1}`];
+  if (job && job.mode) {
+    parts.push(job.mode);
+  }
+  if (job && job.reasoning) {
+    parts.push(job.reasoning);
+  }
+  if (job && job.queuedAt) {
+    parts.push(formatRelative(job.queuedAt));
+  }
+  return parts.join(' • ');
+}
+
+function renderQueuePopover() {
+  if (!els.queuePopover || !els.queuePopoverBody) {
+    return;
+  }
+
+  if (!state.queuePopoverOpen) {
+    els.queuePopover.classList.add('hidden');
+    return;
+  }
+
+  const items = getActiveQueueItems();
+  els.queuePopover.classList.remove('hidden');
+  els.queuePopoverBody.innerHTML = '';
+
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'small';
+    empty.textContent = 'Antrean kosong untuk session aktif.';
+    els.queuePopoverBody.appendChild(empty);
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  items.forEach((job, index) => {
+    const row = document.createElement('div');
+    row.className = 'queue-row';
+
+    const head = document.createElement('div');
+    head.className = 'queue-row-head';
+
+    const order = document.createElement('div');
+    order.className = 'queue-row-index';
+    order.textContent = `Queue ${index + 1}`;
+
+    const meta = document.createElement('div');
+    meta.className = 'queue-row-meta';
+    meta.textContent = buildQueueMeta(job, index);
+
+    const prompt = document.createElement('p');
+    prompt.className = 'queue-row-prompt';
+    prompt.textContent = normalizeText(job && job.prompt) || '(prompt kosong)';
+
+    const actions = document.createElement('div');
+    actions.className = 'queue-row-actions';
+
+    const injectButton = document.createElement('button');
+    injectButton.type = 'button';
+    injectButton.className = 'button';
+    injectButton.textContent = 'Inject';
+    injectButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      injectQueuedPrompt(job && job.id ? job.id : '');
+    });
+
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'button stop-inline';
+    removeButton.textContent = 'Hapus';
+    removeButton.addEventListener('click', (event) => {
+      event.stopPropagation();
+      removeQueuedPrompt(job && job.id ? job.id : '');
+    });
+
+    head.append(order, meta);
+    actions.append(injectButton, removeButton);
+    row.append(head, prompt, actions);
+    frag.appendChild(row);
+  });
+
+  els.queuePopoverBody.appendChild(frag);
+}
+
+function toggleQueuePopover(forceOpen) {
+  if (!els.queuePopover) {
+    return;
+  }
+
+  const hasQueue = Number.isFinite(state.queueSize) && state.queueSize > 0;
+  const next = typeof forceOpen === 'boolean' ? forceOpen : !state.queuePopoverOpen;
+  state.queuePopoverOpen = hasQueue ? next : false;
+  if (state.queuePopoverOpen) {
+    toggleJobsPopover(false);
+  }
+  renderQueuePopover();
+}
+
+function injectQueuedPrompt(queueItemId) {
+  const entry = getQueueState(state.activeProjectId, state.activeSessionId);
+  if (!entry || !queueItemId) {
+    return;
+  }
+
+  const job = entry.queue.removeById(queueItemId);
+  if (!job) {
+    setStatus('item queue tidak ditemukan', true);
+    renderQueuePopover();
+    return;
+  }
+
+  const current = els.promptInput ? els.promptInput.value.trim() : '';
+  const nextPrompt = normalizeText(job.prompt);
+  if (els.promptInput) {
+    els.promptInput.value = current ? `${current}\n\n${nextPrompt}` : nextPrompt;
+    els.promptInput.focus();
+    els.promptInput.setSelectionRange(els.promptInput.value.length, els.promptInput.value.length);
+  }
+
+  state.preferences = normalizePreferences({
+    model: job.model,
+    reasoning: job.reasoning,
+    mode: job.mode,
+  });
+  applyPreferencesToControls();
+  syncActiveQueueSize();
+  renderQueuePopover();
+  setStatus('prompt queue di-inject ke input', false, true);
+}
+
+function removeQueuedPrompt(queueItemId) {
+  const entry = getQueueState(state.activeProjectId, state.activeSessionId);
+  if (!entry || !queueItemId) {
+    return;
+  }
+
+  const removed = entry.queue.removeById(queueItemId);
+  if (!removed) {
+    setStatus('item queue tidak ditemukan', true);
+    renderQueuePopover();
+    return;
+  }
+
+  syncActiveQueueSize();
+  renderQueuePopover();
+  setStatus('item queue dihapus', false, true);
 }
 
 function updateSendButtonState() {
@@ -1064,15 +1435,39 @@ function scrollChatToBottom() {
   });
 }
 
-function buildWarningHint(details) {
+function getProviderLoginCommand(provider = 'codex') {
+  if (provider === 'claude') {
+    return 'claude auth login';
+  }
+
+  return 'codex login --device-auth';
+}
+
+function getProviderCliLabel(provider = 'codex') {
+  return provider === 'claude' ? 'Claude' : 'Codex';
+}
+
+function buildWarningHint(details, provider = 'codex') {
   const text = typeof details === 'string' ? details.toLowerCase() : '';
+  const cliLabel = getProviderCliLabel(provider);
+  const loginCommand = getProviderLoginCommand(provider);
 
   if (text.includes('not found') || text.includes('path')) {
-    return 'CLI codex tidak ditemukan di PATH server. Cek instalasi dan PATH.';
+    return `CLI ${cliLabel.toLowerCase()} tidak ditemukan di PATH server. Cek instalasi dan PATH.`;
+  }
+
+  if (
+    text.includes('limit') ||
+    text.includes('rate limit') ||
+    text.includes('quota') ||
+    text.includes('capacity') ||
+    text.includes('too many requests')
+  ) {
+    return 'Provider kemungkinan kena limit atau rate limit. Biasanya perlu tunggu limit reset, kurangi request, atau login ulang jika sesi sudah tidak valid.';
   }
 
   if (text.includes('login') || text.includes('auth') || text.includes('token') || text.includes('permission')) {
-    return 'Sesi login Codex kemungkinan bermasalah. Jalankan `codex login` di server.';
+    return `Sesi login ${cliLabel} kemungkinan bermasalah. Jalankan \`${loginCommand}\` di server.`;
   }
 
   if (text.includes('timeout') || text.includes('timed out')) {
@@ -1082,23 +1477,120 @@ function buildWarningHint(details) {
   return 'Cek log service/server untuk detail tambahan.';
 }
 
+function normalizeWarningText(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function inferWarningReason(details) {
+  const text = normalizeWarningText(details);
+  if (!text) {
+    return '';
+  }
+
+  if (text.includes('not found') || text.includes('path')) {
+    return 'cli_missing';
+  }
+
+  if (
+    text.includes('limit') ||
+    text.includes('rate limit') ||
+    text.includes('quota') ||
+    text.includes('capacity') ||
+    text.includes('too many requests')
+  ) {
+    return 'limit';
+  }
+
+  if (
+    text.includes('login') ||
+    text.includes('auth') ||
+    text.includes('token') ||
+    text.includes('permission') ||
+    text.includes('unauthorized') ||
+    text.includes('forbidden')
+  ) {
+    return 'auth';
+  }
+
+  if (text.includes('timeout') || text.includes('timed out')) {
+    return 'timeout';
+  }
+
+  return 'unknown';
+}
+
+function shouldSuggestDeviceAuth(warning) {
+  if (!warning || warning.provider !== 'codex') {
+    return false;
+  }
+
+  return warning.reason === 'auth' || warning.reason === 'limit';
+}
+
 function buildChatWarning(error, providerFallback) {
   const body = error && typeof error === 'object' ? error.body : null;
   const detailsFromBody = body && typeof body.details === 'string' ? body.details : '';
   const detailsFromMessage = error && typeof error.message === 'string' ? error.message : '';
   const details = detailsFromBody || detailsFromMessage || 'Request failed.';
   const providerFromBody = body && typeof body.provider === 'string' ? body.provider : '';
+  const provider = providerFromBody || providerFallback || state.defaultProvider;
   const code = body && typeof body.code === 'number' ? body.code : null;
+  const reason = inferWarningReason(details);
 
   return {
-    provider: providerFromBody || providerFallback || state.defaultProvider,
+    provider,
     code,
     details,
-    hint: buildWarningHint(details),
+    hint: buildWarningHint(details, provider),
+    reason,
     level: 'error',
     title: 'Gagal mendapatkan balasan dari provider.',
     createdAt: new Date().toISOString(),
+    loginCommand: reason === 'auth' || reason === 'limit' ? getProviderLoginCommand(provider) : '',
+    loginUrl: '',
+    loginCode: '',
   };
+}
+
+async function enrichChatWarning(warning, sessionContext = {}) {
+  if (!warning || !shouldSuggestDeviceAuth(warning) || warning.loginUrl) {
+    return warning;
+  }
+
+  try {
+    const result = await api.startDeviceAuth('codex');
+    if (!result || typeof result !== 'object') {
+      return warning;
+    }
+
+    const loginUrl =
+      typeof result.verificationUrl === 'string' ? result.verificationUrl.trim() : '';
+    const loginCode = typeof result.userCode === 'string' ? result.userCode.trim() : '';
+    const command = typeof result.command === 'string' ? result.command.trim() : '';
+
+    if (loginUrl) {
+      warning.loginUrl = loginUrl;
+    }
+    if (loginCode) {
+      warning.loginCode = loginCode;
+    }
+    if (command) {
+      warning.loginCommand = command;
+    }
+  } catch (_error) {
+    // Keep warning usable even if device auth link cannot be fetched automatically.
+  }
+
+  const isSameSession =
+    sessionContext &&
+    sessionContext.projectId === state.activeProjectId &&
+    sessionContext.sessionId === state.activeSessionId;
+
+  if (isSameSession) {
+    scheduleRenderMessages();
+  }
+
+  return warning;
 }
 
 function createAbortError() {
@@ -1185,6 +1677,14 @@ function addProcessEventsFromCliProgress(progress) {
   }
 }
 
+function setProcessProgressPercent(value) {
+  if (Number.isFinite(value) && value >= 0 && value <= 100) {
+    state.process.progressPercent = value;
+    return;
+  }
+  state.process.progressPercent = null;
+}
+
 function stopActiveRequest() {
   if (!isActiveAwaiting() || !state.requestAbortController) {
     return;
@@ -1264,6 +1764,10 @@ function getWarningKey(warning) {
     warning.title || '',
     warning.details || '',
     warning.hint || '',
+    warning.reason || '',
+    warning.loginCommand || '',
+    warning.loginUrl || '',
+    warning.loginCode || '',
     warning.createdAt || '',
   ].join('|');
 }
@@ -1312,6 +1816,49 @@ function buildWarningNode(warning) {
   content.textContent = lines.join('\n');
 
   warningBox.append(meta, title, content);
+
+  if (warning.loginCommand || warning.loginUrl || warning.loginCode) {
+    const authBox = document.createElement('div');
+    authBox.className = 'warning-auth-box';
+
+    if (warning.reason === 'limit') {
+      const reason = document.createElement('div');
+      reason.className = 'warning-auth-reason';
+      reason.textContent = 'Penyebab paling umum: limit/rate limit provider atau sesi login Codex sudah tidak valid.';
+      authBox.appendChild(reason);
+    }
+
+    if (warning.loginUrl) {
+      const linkRow = document.createElement('div');
+      linkRow.className = 'warning-auth-row';
+      const linkLabel = document.createElement('span');
+      linkLabel.textContent = 'Login link: ';
+      const link = document.createElement('a');
+      link.href = warning.loginUrl;
+      link.target = '_blank';
+      link.rel = 'noreferrer noopener';
+      link.textContent = warning.loginUrl;
+      linkRow.append(linkLabel, link);
+      authBox.appendChild(linkRow);
+    }
+
+    if (warning.loginCode) {
+      const codeRow = document.createElement('div');
+      codeRow.className = 'warning-auth-row';
+      codeRow.textContent = `Kode: ${warning.loginCode}`;
+      authBox.appendChild(codeRow);
+    }
+
+    if (warning.loginCommand) {
+      const command = document.createElement('div');
+      command.className = 'warning-command';
+      command.textContent = warning.loginCommand;
+      authBox.appendChild(command);
+    }
+
+    warningBox.appendChild(authBox);
+  }
+
   return warningBox;
 }
 
@@ -1775,6 +2322,7 @@ function startProcess(label = PROCESS_LABELS.waiting) {
   state.process.label = label;
   state.process.startedAt = Date.now();
   state.process.elapsedMs = 0;
+  state.process.progressPercent = null;
   state.process.isError = false;
   state.process.visible = false;
   state.process.exiting = false;
@@ -1791,6 +2339,9 @@ function stopProcess({ isError = false, finalLabel = '' } = {}) {
   if (finalLabel) {
     state.process.label = finalLabel;
   }
+  if (!isError && finalLabel === PROCESS_LABELS.done) {
+    state.process.progressPercent = 100;
+  }
   if (state.process.startedAt > 0) {
     state.process.elapsedMs = Date.now() - state.process.startedAt;
   }
@@ -1804,13 +2355,25 @@ function stopProcess({ isError = false, finalLabel = '' } = {}) {
 function syncProcessFromJobs() {
   const projectId = state.activeProjectId;
   const sessionId = state.activeSessionId;
+  let changed = false;
+
   if (!projectId || !sessionId) {
-    return;
+    if (state.awaitingAssistant) {
+      state.awaitingAssistant = false;
+      changed = true;
+    }
+    if (changed) {
+      updateSendButtonState();
+    }
+    return changed;
   }
 
   const job = getSessionJob(projectId, sessionId);
   if (job) {
-    state.awaitingAssistant = true;
+    if (!state.awaitingAssistant) {
+      state.awaitingAssistant = true;
+      changed = true;
+    }
     if (
       !state.process.active ||
       state.process.projectId !== projectId ||
@@ -1820,6 +2383,7 @@ function syncProcessFromJobs() {
       state.process.label = PROCESS_LABELS.waiting;
       state.process.startedAt = job.startedAt ? new Date(job.startedAt).getTime() : Date.now();
       state.process.elapsedMs = Date.now() - state.process.startedAt;
+      setProcessProgressPercent(job.progressPercent);
       state.process.isError = false;
       state.process.visible = false;
       state.process.exiting = false;
@@ -1827,18 +2391,37 @@ function syncProcessFromJobs() {
       state.process.showAll = false;
       state.process.projectId = projectId;
       state.process.sessionId = sessionId;
+      changed = true;
+    }
+    if (
+      state.process.active &&
+      state.process.projectId === projectId &&
+      state.process.sessionId === sessionId
+    ) {
+      state.process.elapsedMs = Date.now() - state.process.startedAt;
+      setProcessProgressPercent(job.progressPercent);
+      addProcessEventsFromCliProgress(job.progress);
+      changed = true;
     }
   } else if (!localAwaitingBySession.has(getQueueKey(projectId, sessionId))) {
-    state.awaitingAssistant = false;
+    if (state.awaitingAssistant) {
+      state.awaitingAssistant = false;
+      changed = true;
+    }
     if (
       state.process.active &&
       state.process.projectId === projectId &&
       state.process.sessionId === sessionId
     ) {
       stopProcess();
+      changed = true;
     }
   }
-  updateSendButtonState();
+
+  if (changed) {
+    updateSendButtonState();
+  }
+  return changed;
 }
 
 async function loadMetaAndSettings() {
@@ -1907,8 +2490,11 @@ async function loadProjects() {
     renderMasterProjectRoot();
   }
 
+  const urlState = getUrlState();
   const stored = localStorage.getItem('activeProjectId');
-  if (stored && state.projects.some((project) => project.id === stored)) {
+  if (urlState.projectId && state.projects.some((project) => project.id === urlState.projectId)) {
+    state.activeProjectId = urlState.projectId;
+  } else if (stored && state.projects.some((project) => project.id === stored)) {
     state.activeProjectId = stored;
   }
 
@@ -1921,6 +2507,7 @@ async function loadProjects() {
     state.activeSessionId = '';
     state.activeSession = null;
     applySessionPreferences(null);
+    replaceUrlState('', '');
     renderSessionList();
     renderHeader();
     renderMessages();
@@ -1938,12 +2525,18 @@ async function loadSessions(projectId, options = {}) {
     }
   }
 
-  let nextActiveId = state.activeSessionId;
-  if (useStored) {
+  let nextActiveId = '';
+  const urlState = getUrlState();
+  if (urlState.projectId === projectId && urlState.sessionId && state.sessions.some((session) => session.id === urlState.sessionId)) {
+    nextActiveId = urlState.sessionId;
+  } else if (useStored) {
     const stored = localStorage.getItem(`activeSessionId:${projectId}`);
     if (stored && state.sessions.some((session) => session.id === stored)) {
       nextActiveId = stored;
     }
+  }
+  if (!nextActiveId && state.activeSessionId && state.sessions.some((session) => session.id === state.activeSessionId)) {
+    nextActiveId = state.activeSessionId;
   }
 
   const hasActive = nextActiveId && state.sessions.some((session) => session.id === nextActiveId);
@@ -1979,15 +2572,22 @@ async function onSessionSelect(sessionId, shouldRenderList = true, options = {})
 
   state.activeSessionId = sessionId;
   localStorage.setItem(`activeSessionId:${state.activeProjectId}`, sessionId);
+  replaceUrlState(state.activeProjectId, sessionId);
   state.assistantFlashMessageId = '';
   state.chatWarning = null;
+  toggleQueuePopover(false);
   state.awaitingAssistant = isSessionAwaiting(state.activeProjectId, sessionId);
   state.requestAbortController =
     abortControllersBySession.get(getQueueKey(state.activeProjectId, sessionId)) || null;
   updateSendButtonState();
   mountSessionDomState(sessionId);
 
-  if (!preferCached || !canReuseActiveSession(sessionId)) {
+  const cacheKey = getQueueKey(state.activeProjectId, sessionId);
+  const cachedSession = preferCached ? backgroundSessionCache.get(cacheKey) : null;
+  if (cachedSession) {
+    state.activeSession = cachedSession;
+    backgroundSessionCache.delete(cacheKey);
+  } else if (!preferCached || !canReuseActiveSession(sessionId)) {
     const data = await api.getSession(state.activeProjectId, sessionId);
     state.activeSession = data.session;
   }
@@ -2325,6 +2925,9 @@ async function executePromptJob(job) {
     }
     if (stillViewingSession) {
       stopProcess({ finalLabel: PROCESS_LABELS.done });
+      if (Number.isFinite(data.progressPercent)) {
+        setProcessProgressPercent(data.progressPercent);
+      }
       refreshSessionRuntimeIndicators();
       addProcessEventsFromCliProgress(data.progress);
       addProcessEventsFromResult(data.result);
@@ -2382,6 +2985,7 @@ async function executePromptJob(job) {
     } else {
       if (isViewingSession) {
         state.chatWarning = buildChatWarning(error, provider);
+        await enrichChatWarning(state.chatWarning, { projectId, sessionId });
         stopProcess({
           isError: true,
           finalLabel:
@@ -2533,21 +3137,18 @@ async function sendPrompt(event) {
 }
 
 async function onProjectSelectChange() {
-  if (isActiveAwaiting() || state.queueSize > 0) {
-    els.projectSelect.value = state.activeProjectId;
-    setStatus('selesaikan proses/antrean dulu sebelum pindah project', true);
-    return;
-  }
-
   state.activeProjectId = els.projectSelect.value;
   localStorage.setItem('activeProjectId', state.activeProjectId);
+  replaceUrlState(state.activeProjectId, '');
   state.chatWarning = null;
+  toggleQueuePopover(false);
   syncActiveQueueSize();
 
   if (!state.activeProjectId) {
     state.sessions = [];
     state.activeSessionId = '';
     state.activeSession = null;
+    replaceUrlState('', '');
     renderSessionList();
     renderHeader();
     renderMessages();
@@ -2635,6 +3236,8 @@ function handleWindowResize() {
   if (!isMobileViewport()) {
     closeMobilePanel();
   }
+  toggleQueuePopover(false);
+  toggleJobsPopover(false);
 }
 
 async function init() {
@@ -2697,6 +3300,17 @@ async function init() {
   });
   els.closePanelButton.addEventListener('click', closeMobilePanel);
   els.panelBackdrop.addEventListener('click', closeMobilePanel);
+  document.addEventListener('pointerdown', (event) => {
+    if (!isMobilePanelOpen()) {
+      return;
+    }
+    const insidePanel =
+      (els.sidePanel && els.sidePanel.contains(event.target)) ||
+      (els.activeProjectName && els.activeProjectName.contains(event.target));
+    if (!insidePanel) {
+      closeMobilePanel();
+    }
+  });
   if (els.promptInput) {
     els.promptInput.addEventListener('keydown', handlePromptKeydown);
     els.promptInput.addEventListener('beforeinput', handlePromptBeforeInput);
@@ -2730,18 +3344,39 @@ async function init() {
       toggleJobsPopover();
     });
   }
+  if (els.queueInfo) {
+    els.queueInfo.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleQueuePopover();
+    });
+    els.queueInfo.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleQueuePopover();
+      }
+    });
+  }
   if (els.jobsPopoverClose) {
     els.jobsPopoverClose.addEventListener('click', () => toggleJobsPopover(false));
   }
+  if (els.queuePopoverClose) {
+    els.queuePopoverClose.addEventListener('click', () => toggleQueuePopover(false));
+  }
   document.addEventListener('click', (event) => {
-    if (!state.jobsPopoverOpen) {
+    if (!state.jobsPopoverOpen && !state.queuePopoverOpen) {
       return;
     }
-    const inside =
+    const insideJobs =
       (els.jobsPopover && els.jobsPopover.contains(event.target)) ||
       (els.jobIndicator && els.jobIndicator.contains(event.target));
-    if (!inside) {
+    if (state.jobsPopoverOpen && !insideJobs) {
       toggleJobsPopover(false);
+    }
+    const insideQueue =
+      (els.queuePopover && els.queuePopover.contains(event.target)) ||
+      (els.queueInfo && els.queueInfo.contains(event.target));
+    if (state.queuePopoverOpen && !insideQueue) {
+      toggleQueuePopover(false);
     }
   });
   window.addEventListener('resize', handleWindowResize);

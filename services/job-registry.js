@@ -29,6 +29,20 @@ function endJob(id) {
   jobs.delete(id);
 }
 
+function updateJob(id, patch = {}) {
+  if (!id || !patch || typeof patch !== 'object') {
+    return;
+  }
+  const entry = jobs.get(id);
+  if (!entry || !entry.meta) {
+    return;
+  }
+  entry.meta = {
+    ...entry.meta,
+    ...patch,
+  };
+}
+
 function listJobs() {
   return Array.from(jobs.values())
     .map((entry) => (entry && entry.meta ? entry.meta : {}))
@@ -70,6 +84,7 @@ function countJobs() {
 module.exports = {
   startJob,
   endJob,
+  updateJob,
   listJobs,
   stopAllJobs,
   countJobs,

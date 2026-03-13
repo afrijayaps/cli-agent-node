@@ -23,8 +23,9 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
 - Theme modular (default `aether`, opsi `slate`, `ember`).
 - AI manager: primary + fallback (default primary `codex`).
 - Daftar project otomatis diambil dari subfolder di dalam `masterProjectRoot`.
-- Penyimpanan session persisten di folder `data/projects/...`.
-- Auth provider tetap lewat CLI login di server (bukan API key aplikasi).
+- Penyimpanan persisten utama sekarang memakai SQLite di `data/app.sqlite`, dengan mirror file JSON lama di `data/projects/...` untuk kompatibilitas data existing.
+- Memory terpisah disimpan di SQLite dengan scope `session` dan `project`; memory project dipakai untuk hal penting lintas session.
+- Auth provider tetap lewat CLI login di server. Login dari token/API key aplikasi tidak didukung.
 - CLI provider dieksekusi dengan `cwd` sesuai folder project yang dipilih.
 
 ## Arsitektur Ringkas
@@ -32,10 +33,12 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
 - `server.js`: bootstrap Express, static frontend, routing utama.
 - `routes/api.js`: endpoint API modular.
 - `services/`:
-  - `chat-service.js`: validasi + eksekusi chat.
-  - `project-service.js`: CRUD project/session + persistence.
+- `chat-service.js`: validasi + eksekusi chat.
+- `memory-service.js`: persistence memory scope `project` / `session`.
+- `project-service.js`: CRUD project/session + persistence.
   - `settings-service.js`: load/save settings app.
-  - `storage.js`: helper filesystem.
+- `storage.js`: helper filesystem.
+- `sqlite.js`: bootstrap schema SQLite lokal.
 - `providers/`:
   - `codex.js`, `claude.js`, `antigravity.js`, `ollama.js`
   - `index.js` registry provider + default provider.
@@ -44,7 +47,16 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
 
 ## Struktur Data Session
 
-Project dan session disimpan berbasis folder:
+Project dan session sekarang disimpan utama di SQLite `data/app.sqlite`.
+
+Selain itu, memory tersimpan di tabel `memories` pada SQLite yang sama:
+
+- scope `session`: konteks khusus satu session
+- scope `project`: konteks penting lintas session dalam project yang sama
+
+Saat `POST /api/projects/:projectId/sessions/:sessionId/ask` dipanggil, backend akan menambahkan memory `project` dan `session` ke prompt provider bila ada isi.
+
+Untuk kompatibilitas, file mirror lama tetap dipertahankan berbasis folder:
 
 `data/projects/<slug-nama-project>/<slug-project-path>/`
 
@@ -60,6 +72,7 @@ Contoh:
 Catatan:
 
 - Struktur lama satu level project tetap didukung untuk backward compatibility.
+- Data lama file JSON akan dimigrasikan otomatis ke SQLite saat dibaca/disentuh service.
 - Format `session.id`: `<folderProject>::<6-char>` (contoh `farm.asrijaya.com::a1b2c3`).
 
 ## Rule Project Source (Master Path)
@@ -105,19 +118,28 @@ npm start
 
 Server listen di port `8000`.
 
-## Login Provider (CLI, Bukan API Key)
+## Login Provider (CLI, Bukan Token/API Key)
 
-Default provider adalah `codex`, jadi lakukan login di server:
+Default provider adalah `codex`, jadi login harus dilakukan langsung di server. Jika ingin memakai Claude sebagai provider, login Claude juga harus dilakukan di server:
 
 ```bash
-codex login
+codex login --device-auth
+claude auth login
 ```
+
+Catatan:
+
+- File token seperti `~/.codex/auth.json` tidak dipakai untuk flow login aplikasi.
+- Backend membaca `codex login status` sebagai jalur utama, lalu fallback ke file auth jika environment server tidak bisa mengecek status CLI secara normal.
+- Backend membaca `claude auth status` sebagai jalur utama untuk Claude, lalu fallback ke file auth lokal Claude jika perlu.
+- Di halaman Settings, Codex punya tombol `Mulai Device Auth` dan Claude punya tombol `Login Claude` untuk memulai flow dari web.
 
 Verifikasi:
 
 ```bash
 codex --help
-printf "/status\n" | codex
+codex login status
+claude auth status --json
 codex exec "say ok"
 ```
 

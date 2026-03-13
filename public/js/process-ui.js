@@ -22,28 +22,22 @@ function formatDuration(ms) {
   return `${minutes}m ${seconds}s`;
 }
 
-function getPhasePercent(label, labels, active) {
-  if (!label) {
-    return active ? 35 : 100;
+function getProgressView(snapshot) {
+  const percent = Number.isFinite(snapshot && snapshot.progressPercent)
+    ? Math.max(0, Math.min(100, snapshot.progressPercent))
+    : null;
+
+  if (percent !== null) {
+    return {
+      determinate: true,
+      width: Math.max(2, percent),
+    };
   }
-  if (labels) {
-    if (label === labels.creating) {
-      return 20;
-    }
-    if (label === labels.sending) {
-      return 38;
-    }
-    if (label === labels.waiting) {
-      return 64;
-    }
-    if (label === labels.persisting) {
-      return 84;
-    }
-    if (label === labels.done || label === labels.stopped) {
-      return 100;
-    }
-  }
-  return active ? 55 : 100;
+
+  return {
+    determinate: !snapshot.active,
+    width: snapshot.active ? 42 : 100,
+  };
 }
 
 function renderProcessEvent(text) {
@@ -126,7 +120,7 @@ function renderProcessList(events, isError) {
   return `<div class="${className}">${items}</div>`;
 }
 
-export function createProcessUI({ chatLog, toggleRoot, processState, renderMessages, labels }) {
+export function createProcessUI({ chatLog, toggleRoot, processState, renderMessages }) {
   const state = processState || {};
   const bindRoot = toggleRoot || chatLog;
 
@@ -159,6 +153,7 @@ export function createProcessUI({ chatLog, toggleRoot, processState, renderMessa
       label: typeof state.label === 'string' ? state.label : '',
       startedAt: Number.isFinite(state.startedAt) ? state.startedAt : 0,
       elapsedMs,
+      progressPercent: Number.isFinite(state.progressPercent) ? state.progressPercent : null,
       events,
       showAll: Boolean(state.showAll),
       hasEvents: events.length > 0,
@@ -173,10 +168,7 @@ export function createProcessUI({ chatLog, toggleRoot, processState, renderMessa
     const title = DEFAULT_TITLE;
     const toggleLabel = showAll ? '▲' : '▼';
     const toggleText = showAll ? 'Sembunyikan detail' : 'Lihat detail';
-    const percent = Math.max(
-      6,
-      Math.min(100, getPhasePercent(snapshot.label, labels, snapshot.active)),
-    );
+    const progressView = getProgressView(snapshot);
     const shellClass = `thinking-shell${showAll ? '' : ' compact'}${
       snapshot.isError ? ' error' : ''
     }`;
@@ -200,7 +192,7 @@ export function createProcessUI({ chatLog, toggleRoot, processState, renderMessa
           )}" aria-expanded="${showAll ? 'true' : 'false'}">${toggleLabel}</button>
         </div>
         <div class="${phaseClass}">${escapeHtml(phaseLabel)}</div>
-        <div class="thinking-rail"><span style="width: ${percent}%"></span></div>
+        <div class="thinking-rail${progressView.determinate ? '' : ' indeterminate'}"><span style="width: ${progressView.width}%"></span></div>
         ${showAll ? processList : ''}
         <div class="thinking-meta muted">${escapeHtml(elapsedLabel)} • ${escapeHtml(metaLabel)}</div>
       </section>
@@ -216,10 +208,7 @@ export function createProcessUI({ chatLog, toggleRoot, processState, renderMessa
     const title = DEFAULT_TITLE;
     const toggleLabel = showAll ? '▲' : '▼';
     const toggleText = showAll ? 'Sembunyikan detail' : 'Lihat detail';
-    const percent = Math.max(
-      6,
-      Math.min(100, getPhasePercent(snapshot.label, labels, snapshot.active)),
-    );
+    const progressView = getProgressView(snapshot);
     const phaseLabel = snapshot.label || title;
     const elapsedLabel = formatDuration(snapshot.elapsedMs);
     const metaLabel = snapshot.hasEvents
@@ -238,7 +227,7 @@ export function createProcessUI({ chatLog, toggleRoot, processState, renderMessa
             <span>${escapeHtml(title)}</span>
           </div>
           <div class="process-inline-phase" title="${escapeHtml(phaseLabel)}">${escapeHtml(phaseLabel)}</div>
-          <div class="process-inline-rail"><span style="width: ${percent}%"></span></div>
+          <div class="process-inline-rail${progressView.determinate ? '' : ' indeterminate'}"><span style="width: ${progressView.width}%"></span></div>
           <div class="process-inline-meta">${escapeHtml(elapsedLabel)} • ${escapeHtml(metaLabel)}</div>
           <button class="process-toggle inline process-inline-toggle" data-process-toggle type="button" aria-label="${escapeHtml(
             toggleText,

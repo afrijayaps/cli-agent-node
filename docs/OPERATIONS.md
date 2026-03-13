@@ -65,8 +65,15 @@ Default provider aplikasi: `codex`.
 Login codex di server:
 
 ```bash
-codex login
-printf "/status\n" | codex
+codex login --device-auth
+codex login status
+```
+
+Login Claude di server:
+
+```bash
+claude auth login
+claude auth status --json
 ```
 
 Tes non-interaktif (dipakai server):
@@ -78,6 +85,7 @@ codex exec "say ok"
 Catatan:
 
 - Server menggunakan mode non-interaktif untuk codex (`codex exec`), bukan mode TUI interaktif.
+- Halaman Settings menyediakan tombol `Mulai Device Auth` untuk Codex dan `Login Claude` untuk memulai login dari web jika CLI mendukung flow tersebut.
 
 ## 5) Monitoring dan Log
 
@@ -151,7 +159,8 @@ Checklist:
 Jika response `502`:
 
 - Pastikan binary provider ada di PATH (`which codex`).
-- Pastikan sudah login (`codex login`).
+- Pastikan sudah login via CLI (`codex login`).
+- Jangan andalkan inject token manual ke aplikasi; flow yang didukung tetap sesi login CLI user server.
 - Tes manual:
   - `codex exec "test"`
   - Pastikan command dijalankan dari folder project aktif jika butuh path relatif.

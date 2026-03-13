@@ -56,8 +56,11 @@
 
       <main class="workspace">
         <header class="workspace-head">
-          <div>
-            <h1 id="activeProjectName" class="workspace-title menu-trigger" role="button" tabindex="0" aria-label="Open menu">Belum ada project</h1>
+          <div class="workspace-head-copy">
+            <div class="workspace-title-row">
+              <h1 id="activeProjectName" class="workspace-title menu-trigger" role="button" tabindex="0" aria-label="Open menu">Belum ada project</h1>
+              <div id="queueInfo" class="status-queue workspace-queue menu-trigger" role="button" tabindex="0" aria-label="Buka daftar antrean" hidden>Queue: 0</div>
+            </div>
             <p id="activeSessionName" class="workspace-subtitle">Pilih project lalu mulai chat.</p>
           </div>
           <div style="display: flex; gap: 8px">
@@ -75,6 +78,13 @@
           </div>
           <div id="jobsPopoverBody" class="jobs-popover-body"></div>
         </div>
+        <div id="queuePopover" class="queue-popover hidden" role="dialog" aria-live="polite">
+          <div class="jobs-popover-head">
+            <div class="jobs-popover-title">Queue Aktif</div>
+            <button id="queuePopoverClose" type="button" class="button">Tutup</button>
+          </div>
+          <div id="queuePopoverBody" class="jobs-popover-body"></div>
+        </div>
 
         <section id="chatLog" class="chat-log">
           <div class="empty" id="emptyState">
@@ -88,7 +98,6 @@
         <form id="askForm" class="composer">
           <div class="status-row">
             <div id="statusText" class="status">Status: idle</div>
-            <div id="queueInfo" class="status-queue" hidden>Queue: 0</div>
           </div>
           <div id="processInline" class="process-inline" hidden></div>
           <div class="composer-box">
