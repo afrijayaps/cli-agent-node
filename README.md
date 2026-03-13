@@ -13,7 +13,7 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
   - kirim prompt dalam session.
 - Frontend web:
   - halaman chat: `/`
-  - halaman settings: `/settings` (tema + session manager)
+  - halaman settings: `/settings` (AI manager + tema + server control)
 - Frontend saat ini: Vanilla JS modular (tanpa React), dengan animasi UI (message reveal, typing indicator, hover motion).
 - Proses menjawab menampilkan lifecycle real request (send prompt, wait provider, persist response) dengan timer elapsed real-time.
 - Jika proses gagal, indikator proses berubah merah dan kartu `Peringatan` tampil di chat.
@@ -21,7 +21,7 @@ Server AI berbasis Node.js + Express yang memanggil provider lewat CLI (tanpa AP
 - Konten assistant tetap tampil penuh tanpa bubble besar; code block ditampilkan sebagai codebox compact dengan tombol copy.
 - Placeholder input prompt menampilkan `session.id` aktif agar mudah tracking sesi.
 - Theme modular (default `aether`, opsi `slate`, `ember`).
-- Default provider: `codex`.
+- AI manager: primary + fallback (default primary `codex`).
 - Daftar project otomatis diambil dari subfolder di dalam `masterProjectRoot`.
 - Penyimpanan session persisten di folder `data/projects/...`.
 - Auth provider tetap lewat CLI login di server (bukan API key aplikasi).
@@ -72,21 +72,20 @@ Catatan:
 
 ## Motion Engine (UI Chat)
 
-Status proses jawaban dikelola modular di:
+Status proses jawaban sekarang dibuat ringkas tanpa panel thinking terpisah:
 
 - `public/js/app.js`:
-  - state proses: `state.process` (label, elapsed time, error mode)
-  - `startThinkingAnimation()` / `setProcessLabel()` / `stopThinkingAnimation()`
-  - tombol `Send` otomatis berubah `Stop` saat request aktif (abort request)
+  - state proses: `state.process` dipakai untuk status runtime session dan running jobs
+  - perpindahan step proses ditangani langsung di `setProcessStep()` / `startProcess()` / `stopProcess()`
+  - prompt menggunakan antrean (`message queue`) agar kirim saat proses aktif tidak membatalkan request
+  - tombol `Send (>)` tetap untuk enqueue prompt, tombol `Stop` terpisah untuk abort request aktif
   - parser konten assistant: text tetap tampil, code fence jadi codebox dengan copy button
 - `public/css/base.css`:
-  - class proses compact: `.thinking-live`, `.thinking-inline`, `.thinking-live.error`
   - class assistant compact: `.message.assistant-flat`, `.code-card.compact`
   - warning level: `.message.warning.error` dan `.message.warning.info`
 
 Catatan tuning cepat:
 
-- ingin update timer proses lebih cepat/lambat: ubah interval di `startThinkingAnimation()`.
 - ingin ubah gaya warning error/info: edit class `.message.warning.error` / `.message.warning.info`.
 - tetap accessible: mode `prefers-reduced-motion: reduce` sudah didukung.
 

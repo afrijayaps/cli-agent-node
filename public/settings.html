@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="aether" data-page="settings">
+<html lang="en" data-theme="slate" data-page="settings">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -25,7 +25,9 @@
         <div>
           <div class="badge">CLI LOGIN ONLY</div>
           <h1 style="margin: 10px 0 0">Settings</h1>
-          <p class="small" style="margin: 6px 0 0">Pilih tema visual. Tidak perlu API key karena provider menggunakan CLI login di server.</p>
+          <p class="small" style="margin: 6px 0 0">
+            Atur master project root, AI manager, dan tampilan. Tidak perlu API key karena provider menggunakan CLI login di server.
+          </p>
         </div>
         <a href="/" class="button" style="width: auto; padding: 10px 14px">Back to Chat</a>
       </div>
@@ -48,47 +50,56 @@
 
       <section class="setting-panel">
         <div class="setting-head">
-          <h2 style="margin: 0 0 6px">Session Manager</h2>
+          <h2 style="margin: 0 0 6px">AI Manager</h2>
           <p class="small" style="margin: 0">
-            Pilih project, buat session baru, lalu gunakan session itu di halaman chat.
+            Pilih 1 primary dan 1 fallback (opsional). Maksimal 2 provider aktif.
           </p>
         </div>
         <div class="cli-box">
           <div class="row" style="margin-bottom: 10px">
-            <label class="small" for="settingsProjectSelect">Project</label>
-            <select id="settingsProjectSelect" class="select"></select>
+            <label class="small" for="aiPrimarySelect">Primary AI</label>
+            <select id="aiPrimarySelect" class="select"></select>
           </div>
-          <form id="settingsSessionForm" class="row" style="margin-bottom: 10px">
-            <label class="small" for="settingsSessionTitle">New session title (optional)</label>
-            <input id="settingsSessionTitle" class="input" placeholder="Nama sesi (opsional)" />
-            <button type="submit" class="button">Create Session</button>
-          </form>
-          <ul id="settingsSessionList" class="session-list"></ul>
+          <div class="row" style="margin-bottom: 10px">
+            <label class="small" for="aiFallbackSelect">Fallback AI (opsional)</label>
+            <select id="aiFallbackSelect" class="select"></select>
+          </div>
+          <button id="aiSaveButton" type="button" class="button primary">Save AI Manager</button>
+          <div class="small" style="margin-top: 10px">Provider tersedia: <span id="providerList">-</span></div>
+          <div class="small">Login via CLI di server:</div>
+          <div class="code">codex login</div>
+          <div class="code">claude --help</div>
+          <div class="code">ollama list</div>
         </div>
       </section>
 
       <section class="setting-panel">
         <div class="setting-head">
-          <h2 style="margin: 0 0 6px">Theme</h2>
+          <h2 style="margin: 0 0 6px">System Prompt</h2>
+          <p class="small" style="margin: 0">
+            Instruksi global ringkas 1-3 baris yang dikirim langsung sebelum prompt user, tanpa template wrapper.
+          </p>
+        </div>
+        <div class="cli-box">
+          <div class="row" style="margin-bottom: 10px">
+            <label class="small" for="systemPromptInput">System prompt (opsional)</label>
+            <textarea
+              id="systemPromptInput"
+              class="textarea"
+              rows="3"
+              placeholder="Contoh: Jawab ringkas.\nFokus ke langkah konkret.\nMaksimal 3 baris."
+            ></textarea>
+          </div>
+          <button id="systemPromptSaveButton" type="button" class="button primary">Save System Prompt</button>
+        </div>
+      </section>
+
+      <section class="setting-panel">
+        <div class="setting-head">
+          <h2 style="margin: 0 0 6px">Tampilan</h2>
           <p class="small" style="margin: 0">Tema dibuat modular agar mudah ditambah/edit.</p>
         </div>
         <div id="themeGrid" class="theme-grid"></div>
-      </section>
-
-      <section class="setting-panel">
-        <div class="setting-head">
-          <h2 style="margin: 0 0 6px">CLI Provider Login</h2>
-          <p class="small" style="margin: 0">Authentication tetap lewat tool CLI, bukan API key di aplikasi ini. Provider default: <strong>codex</strong>.</p>
-        </div>
-        <div class="cli-box">
-          <div class="small">Kalau belum login Codex, jalankan dulu di terminal server:</div>
-          <div class="code">codex login</div>
-          <div class="small">Lalu cek command CLI:</div>
-          <div class="code">codex --help</div>
-          <div class="code">claude --help</div>
-          <div class="code">ollama list</div>
-          <div class="small">Provider tersedia: <span id="providerList">-</span></div>
-        </div>
       </section>
 
       <section class="setting-panel">
@@ -99,8 +110,14 @@
           </p>
         </div>
         <div class="cli-box">
-          <button id="restartServerButton" type="button" class="button danger">Restart Server</button>
+          <div class="row" style="gap: 10px">
+            <button id="stopAllJobsButton" type="button" class="button danger">Stop All Jobs</button>
+            <button id="restartServerButton" type="button" class="button danger">Restart Server</button>
+          </div>
           <div class="small" style="margin-top: 8px">
+            Stop semua job akan membatalkan request provider yang sedang berjalan.
+          </div>
+          <div class="small" style="margin-top: 6px">
             Jika server tidak dikelola process manager, layanan bisa berhenti setelah restart.
           </div>
         </div>

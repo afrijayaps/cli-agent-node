@@ -11,6 +11,39 @@ const {
 
 const PROJECT_FILE = 'project.json';
 const SESSIONS_DIR = 'sessions';
+const DEFAULT_SESSION_PREFERENCES = {
+  model: '',
+  reasoning: 'medium',
+  mode: 'normal',
+};
+
+function normalizeSessionPreferences(input) {
+  const preferences = { ...DEFAULT_SESSION_PREFERENCES };
+
+  if (input && typeof input.model === 'string') {
+    preferences.model = input.model.trim();
+  }
+
+  if (input && typeof input.reasoning === 'string') {
+    const reasoning = input.reasoning.trim();
+    if (reasoning === 'standard') {
+      preferences.reasoning = 'medium';
+    } else if (reasoning === 'deep') {
+      preferences.reasoning = 'high';
+    } else if (['low', 'medium', 'high', 'xhigh'].includes(reasoning)) {
+      preferences.reasoning = reasoning;
+    }
+  }
+
+  if (input && typeof input.mode === 'string') {
+    const mode = input.mode.trim();
+    if (mode === 'plan' || mode === 'normal') {
+      preferences.mode = mode;
+    }
+  }
+
+  return preferences;
+}
 
 function slugify(value) {
   return String(value)
@@ -84,6 +117,33 @@ function getProjectFolderName(project) {
   return typeof project.name === 'string' ? project.name : '';
 }
 
+function resolveProjectNameFromPath(projectPath, fallbackName = '') {
+  if (typeof projectPath === 'string' && projectPath.trim().length > 0) {
+    const base = path.basename(projectPath.trim());
+    if (base) {
+      return base;
+    }
+  }
+  return typeof fallbackName === 'string' ? fallbackName : '';
+}
+
+async function ensureProjectNameSynced(project, projectFile) {
+  if (!project || typeof project !== 'object') {
+    return project;
+  }
+
+  const desiredName = resolveProjectNameFromPath(project.projectPath, project.name);
+  if (!desiredName || project.name === desiredName) {
+    return project;
+  }
+
+  const updated = { ...project, name: desiredName };
+  if (projectFile) {
+    await writeJson(projectFile, updated);
+  }
+  return updated;
+}
+
 function makeProjectId(name, projectPath) {
   const nameSlug = slugify(name);
   const pathSlug = slugifyProjectPath(projectPath);
@@ -155,7 +215,7 @@ async function getProjectOrThrow(projectId) {
     throw new AppError(404, 'Not found', 'Project not found.');
   }
 
-  return project;
+  return ensureProjectNameSynced(project, projectFile);
 }
 
 async function listProjects(options = {}) {
@@ -173,9 +233,10 @@ async function listProjects(options = {}) {
     }
 
     const namePath = path.join(PROJECTS_DIR, nameDir.name);
-    const legacyProject = await readJson(path.join(namePath, PROJECT_FILE), null);
+    const legacyProjectFile = path.join(namePath, PROJECT_FILE);
+    const legacyProject = await readJson(legacyProjectFile, null);
     if (legacyProject) {
-      projects.push(legacyProject);
+      projects.push(await ensureProjectNameSynced(legacyProject, legacyProjectFile));
       continue;
     }
 
@@ -186,9 +247,10 @@ async function listProjects(options = {}) {
         continue;
       }
 
-      const project = await readJson(path.join(namePath, pathDir.name, PROJECT_FILE), null);
+      const projectFile = path.join(namePath, pathDir.name, PROJECT_FILE);
+      const project = await readJson(projectFile, null);
       if (project) {
-        projects.push(project);
+        projects.push(await ensureProjectNameSynced(project, projectFile));
       }
     }
   }
@@ -214,10 +276,6 @@ async function listProjects(options = {}) {
       continue;
     }
 
-    if (path.basename(project.projectPath).startsWith('.')) {
-      continue;
-    }
-
     filtered.push(project);
   }
 
@@ -225,8 +283,8 @@ async function listProjects(options = {}) {
 }
 
 async function upsertProjectRecord({ name, projectPath, failIfExists = false }) {
-  const normalizedName = typeof name === 'string' ? name.trim() : '';
   const normalizedPath = typeof projectPath === 'string' ? path.resolve(projectPath.trim()) : '';
+  const normalizedName = resolveProjectNameFromPath(normalizedPath, name);
 
   if (!normalizedName) {
     throw new AppError(400, 'Validation error', 'name must be a non-empty string.');
@@ -303,10 +361,6 @@ async function syncProjectsFromMasterRoot(masterProjectRoot) {
       continue;
     }
 
-    if (entry.name.startsWith('.')) {
-      continue;
-    }
-
     const projectPath = path.join(normalizedRoot, entry.name);
     const project = await upsertProjectRecord({
       name: entry.name,
@@ -359,6 +413,32 @@ async function listSessions(projectId) {
   return sessions;
 }
 
+async function updateSessionTitle(projectId, sessionId, title) {
+  const session = await getSession(projectId, sessionId);
+  const nextTitle = typeof title === 'string' ? title.trim() : '';
+
+  session.title = nextTitle;
+  session.updatedAt = new Date().toISOString();
+  await writeJson(getSessionFile(projectId, sessionId), session);
+  await touchProject(projectId);
+
+  return session;
+}
+
+async function deleteSession(projectId, sessionId) {
+  await getProjectOrThrow(projectId);
+  const sessionFile = getSessionFile(projectId, sessionId);
+
+  if (!(await fileExists(sessionFile))) {
+    throw new AppError(404, 'Not found', 'Session not found.');
+  }
+
+  await fs.unlink(sessionFile);
+  await touchProject(projectId);
+
+  return { id: sessionId };
+}
+
 async function createSession(projectId, { title }) {
   const project = await getProjectOrThrow(projectId);
 
@@ -369,9 +449,10 @@ async function createSession(projectId, { title }) {
   const session = {
     id: sessionId,
     projectId,
-    title: normalizedTitle || `Session ${new Date().toLocaleString('en-GB')}`,
+    title: normalizedTitle,
     createdAt: now,
     updatedAt: now,
+    preferences: { ...DEFAULT_SESSION_PREFERENCES },
     messages: [],
   };
 
@@ -399,6 +480,12 @@ async function getSession(projectId, sessionId) {
     session.messages = [];
   }
 
+  if (!session.preferences || typeof session.preferences !== 'object') {
+    session.preferences = { ...DEFAULT_SESSION_PREFERENCES };
+  } else {
+    session.preferences = normalizeSessionPreferences(session.preferences);
+  }
+
   return session;
 }
 
@@ -406,14 +493,31 @@ function normalizeMessage(message) {
   const role = typeof message.role === 'string' ? message.role : 'assistant';
   const content = typeof message.content === 'string' ? message.content : '';
   const provider = typeof message.provider === 'string' ? message.provider : null;
+  const model = typeof message.model === 'string' ? message.model.trim() : '';
+  const reasoning = typeof message.reasoning === 'string' ? message.reasoning.trim() : '';
+  const mode = typeof message.mode === 'string' ? message.mode.trim() : '';
 
-  return {
+  const payload = {
     id: makeId('m'),
     role,
     provider,
     content,
     createdAt: new Date().toISOString(),
   };
+
+  if (model) {
+    payload.model = model;
+  }
+
+  if (reasoning) {
+    payload.reasoning = reasoning;
+  }
+
+  if (mode) {
+    payload.mode = mode;
+  }
+
+  return payload;
 }
 
 async function appendMessages(projectId, sessionId, messages) {
@@ -430,13 +534,28 @@ async function appendMessages(projectId, sessionId, messages) {
   return session;
 }
 
+async function setSessionPreferences(projectId, sessionId, nextPreferences) {
+  const session = await getSession(projectId, sessionId);
+  session.preferences = normalizeSessionPreferences({
+    ...session.preferences,
+    ...nextPreferences,
+  });
+  session.updatedAt = new Date().toISOString();
+  await writeJson(getSessionFile(projectId, sessionId), session);
+  await touchProject(projectId);
+  return session;
+}
+
 module.exports = {
   listProjects,
   createProject,
   syncProjectsFromMasterRoot,
   listSessions,
+  updateSessionTitle,
+  deleteSession,
   createSession,
   getProject: getProjectOrThrow,
   getSession,
   appendMessages,
+  setSessionPreferences,
 };

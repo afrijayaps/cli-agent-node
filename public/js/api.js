@@ -40,6 +40,14 @@ export const api = {
   getSettings() {
     return request('/api/settings');
   },
+  getJobs() {
+    return request('/api/jobs');
+  },
+  stopAllJobs() {
+    return request('/api/jobs/stop', {
+      method: 'POST',
+    });
+  },
   updateSettings(payload) {
     return request('/api/settings', {
       method: 'PUT',
@@ -69,6 +77,23 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
     );
   },
+  updateSession(projectId, sessionId, payload) {
+    return request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    );
+  },
+  deleteSession(projectId, sessionId) {
+    return request(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  },
   askInSession(projectId, sessionId, payload, requestOptions = {}) {
     return request(
       `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/ask`,
@@ -78,6 +103,10 @@ export const api = {
         ...requestOptions,
       },
     );
+  },
+  getModels(provider) {
+    const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return request(`/api/models${query}`);
   },
   restartServer() {
     return request('/api/restart', {

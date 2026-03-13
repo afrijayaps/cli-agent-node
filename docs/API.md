@@ -25,14 +25,20 @@ Request body:
 ```json
 {
   "prompt": "text",
-  "provider": "codex|claude|antigravity|ollama"
+  "provider": "codex|claude|antigravity|ollama",
+  "model": "llama3:latest",
+  "reasoning": "high",
+  "mode": "plan"
 }
 ```
 
 Catatan:
 
 - `provider` opsional.
-- Jika `provider` tidak dikirim/kosong, otomatis pakai default `codex`.
+- Jika `provider` tidak dikirim/kosong, otomatis pakai `aiPrimary` di settings.
+- Jika primary gagal dan fallback diset, server mencoba fallback.
+- `model`, `reasoning`, `mode` opsional, jika didukung provider.
+- Nilai `reasoning`: `low`, `medium`, `high`, `xhigh` (default `medium`).
 
 Success `200`:
 
@@ -80,7 +86,10 @@ Success `200`:
   ],
   "settings": {
     "theme": "aether",
-    "masterProjectRoot": "/www/wwwroot"
+    "masterProjectRoot": "/www/wwwroot",
+    "aiPrimary": "codex",
+    "aiFallback": "claude",
+    "systemPrompt": "Kamu adalah asisten engineering. Jawab ringkas dan to the point."
   },
   "authMode": "cli"
 }
@@ -106,7 +115,10 @@ Success `200`:
 ```json
 {
   "theme": "aether",
-  "masterProjectRoot": "/www/wwwroot"
+  "masterProjectRoot": "/www/wwwroot",
+  "aiPrimary": "codex",
+  "aiFallback": "claude",
+  "systemPrompt": "Kamu adalah asisten engineering. Jawab ringkas dan to the point."
 }
 ```
 
@@ -117,7 +129,10 @@ Request:
 ```json
 {
   "theme": "slate",
-  "masterProjectRoot": "/www/wwwroot"
+  "masterProjectRoot": "/www/wwwroot",
+  "aiPrimary": "codex",
+  "aiFallback": "claude",
+  "systemPrompt": "Kamu adalah asisten engineering. Jawab ringkas dan to the point."
 }
 ```
 
@@ -127,7 +142,9 @@ Success `200`:
 {
   "theme": "slate",
   "masterProjectRoot": "/www/wwwroot",
-  "systemPrompt": "Selalu jawab bahasa Indonesia ringkas."
+  "aiPrimary": "codex",
+  "aiFallback": "claude",
+  "systemPrompt": "Kamu adalah asisten engineering. Jawab ringkas dan to the point."
 }
 ```
 
@@ -135,6 +152,12 @@ Validation error `400`:
 
 ```json
 { "error": "Validation error", "details": "theme is not supported." }
+```
+
+Validation error `400` (provider invalid):
+
+```json
+{ "error": "Validation error", "details": "aiPrimary must be a supported provider." }
 ```
 
 Contoh update master root:
@@ -145,7 +168,66 @@ Contoh update master root:
 
 Jika path tidak valid/tidak ada/bukan direktori -> `400`.
 
-## 5) Projects
+## 5) Jobs
+
+### `GET /api/jobs`
+
+Success `200`:
+
+```json
+{
+  "jobs": [
+    {
+      "id": "job-abc123",
+      "startedAt": "2026-03-13T10:00:00.000Z",
+      "type": "session",
+      "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
+      "sessionId": "farm.asrijaya.com::a1b2c3",
+      "provider": "codex",
+      "fallbackProvider": "claude",
+      "model": "gpt-4.1",
+      "reasoning": "medium",
+      "mode": "normal",
+      "promptChars": 128
+    }
+  ],
+  "count": 1
+}
+```
+
+Catatan:
+
+- `jobs` hanya berisi proses yang sedang berjalan.
+
+### `POST /api/jobs/stop`
+
+Best-effort untuk menghentikan semua job aktif (membatalkan request provider yang masih berjalan).
+
+Success `200`:
+
+```json
+{ "stopped": 2, "total": 2 }
+```
+
+Jika tidak ada job aktif, `stopped` bisa `0`.
+
+## 6) Models
+
+### `GET /api/models?provider=:provider`
+
+Success `200`:
+
+```json
+{
+  "provider": "ollama",
+  "models": ["llama3:latest", "deepseek-coder"],
+  "source": "command"
+}
+```
+
+Jika provider tidak menyediakan list model, `models` bisa kosong.
+
+## 7) Projects
 
 ### `GET /api/projects`
 
@@ -212,7 +294,7 @@ Catatan:
 - `projectPath` wajib berada di dalam `masterProjectRoot`.
 - Untuk UI standar, endpoint ini biasanya tidak dipakai langsung karena project dibuat otomatis dari hasil scan folder.
 
-## 6) Sessions
+## 8) Sessions
 
 ### `GET /api/projects/:projectId/sessions`
 
@@ -272,12 +354,20 @@ Success `200`:
     "title": "Diskusi fitur tema",
     "createdAt": "2026-03-12T14:05:20.843Z",
     "updatedAt": "2026-03-12T14:06:15.113Z",
+    "preferences": {
+      "model": "llama3:latest",
+      "reasoning": "high",
+      "mode": "plan"
+    },
     "messages": [
       {
         "id": "m-xxxx",
         "role": "user",
         "provider": "codex",
         "content": "buatkan ringkasan",
+        "model": "llama3:latest",
+        "reasoning": "high",
+        "mode": "plan",
         "createdAt": "2026-03-12T14:06:00.000Z"
       }
     ]
@@ -285,7 +375,7 @@ Success `200`:
 }
 ```
 
-## 7) Ask di Dalam Session
+## 9) Ask di Dalam Session
 
 ### `POST /api/projects/:projectId/sessions/:sessionId/ask`
 
@@ -294,21 +384,31 @@ Request:
 ```json
 {
   "prompt": "balas kata: siap",
-  "provider": "codex"
+  "provider": "codex",
+  "model": "llama3:latest",
+  "reasoning": "high",
+  "mode": "plan"
 }
 ```
 
 Catatan:
 
-- `provider` opsional, default `codex`.
+- `provider` opsional, default ke `aiPrimary` di settings.
+- `model`, `reasoning`, `mode` opsional, disimpan ke `session.preferences`.
 - Message user akan tetap disimpan ke session walaupun provider gagal.
 - Request ini menjalankan CLI provider dengan `cwd` di folder project aktif (`project.projectPath`).
+- Jika primary gagal dan fallback diset di settings, server akan mencoba fallback.
+- Nilai `reasoning`: `low`, `medium`, `high`, `xhigh` (default `medium`).
 
 Success `200`:
 
 ```json
 {
   "result": "siap",
+  "progress": [
+    "Planning edits",
+    "Applying patch"
+  ],
   "session": {
     "id": "farm.asrijaya.com::a1b2c3",
     "projectId": "cli-agent-node--www-wwwroot-cli-agent-node",
@@ -320,9 +420,13 @@ Success `200`:
 }
 ```
 
+Catatan:
+
+- `progress` bersifat opsional, berisi ringkasan log/progres dari CLI provider (jika tersedia).
+
 CLI failure `502`, validation `400`, not found `404`, internal `500`.
 
-## 8) Server Control
+## 10) Server Control
 
 ### `POST /api/restart`
 

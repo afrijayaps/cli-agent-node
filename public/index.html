@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en" data-theme="aether">
+<html lang="en" data-theme="slate">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AI CLI Agent</title>
+    <title>CLI Agent</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Public+Sans:wght@300;400;600;700&display=swap" rel="stylesheet" />
@@ -14,16 +14,16 @@
     <div class="shell">
       <aside class="panel" id="sidePanel">
         <div class="panel-head">
-          <div class="badge">CLI AUTH MODE</div>
+          <div class="badge">CLI Agent</div>
           <button id="closePanelButton" type="button" class="button" style="display: none; width: auto; padding: 6px 10px">Tutup</button>
-          <h2 style="margin: 10px 0 0; font-size: 20px">Menu</h2>
-          <p class="small" style="margin: 6px 0 0">Project picker + session history persisted in folder storage.</p>
+          <h2 style="margin: 10px 0 0; font-size: 20px">Panel</h2>
+          <p class="small" style="margin: 6px 0 0">Pilih project dan session kerja.</p>
         </div>
 
         <section class="section">
-          <h3>Project Source Root</h3>
+          <h3>Root Project</h3>
           <p class="small" style="margin: 0 0 10px">
-            Folder project diambil otomatis dari path master berikut:
+            Path utama untuk daftar project.
           </p>
           <input
             id="masterRootInputInline"
@@ -32,23 +32,23 @@
             style="margin-bottom: 8px"
           />
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px">
-            <button id="saveRootButton" type="button" class="button primary">OK</button>
+            <button id="saveRootButton" type="button" class="button primary">Simpan</button>
             <button id="editRootButton" type="button" class="button">Buka/Edit</button>
           </div>
-          <button id="refreshProjectsButton" type="button" class="button">Refresh Project List</button>
+            <button id="refreshProjectsButton" type="button" class="button">Refresh Project</button>
         </section>
 
         <section class="section">
-          <h3>Current Project</h3>
+          <h3>Project Aktif</h3>
           <select id="projectSelect" class="select"></select>
           <p id="projectPathLabel" class="small" style="margin-top: 8px"></p>
         </section>
 
         <section class="section">
-          <h3>Sessions</h3>
+          <h3>Session</h3>
           <form id="sessionForm" class="row" style="margin-bottom: 10px">
-            <input id="sessionTitle" class="input" placeholder="New session title (optional)" />
-            <button type="submit" class="button">Create Session</button>
+            <input id="sessionTitle" class="input" placeholder="Judul session opsional" />
+            <button type="submit" class="button">Buat Session</button>
           </form>
           <ul id="sessionList" class="session-list"></ul>
         </section>
@@ -57,30 +57,79 @@
       <main class="workspace">
         <header class="workspace-head">
           <div>
-            <h1 id="activeProjectName" class="workspace-title menu-trigger" role="button" tabindex="0" aria-label="Open menu">No project selected</h1>
-            <p id="activeSessionName" class="workspace-subtitle">Select a project folder and create a session to start chatting.</p>
+            <h1 id="activeProjectName" class="workspace-title menu-trigger" role="button" tabindex="0" aria-label="Open menu">Belum ada project</h1>
+            <p id="activeSessionName" class="workspace-subtitle">Pilih project lalu mulai chat.</p>
           </div>
           <div style="display: flex; gap: 8px">
-            <a href="/settings" class="button" style="width: auto; padding: 9px 12px">Theme</a>
+            <div id="jobIndicator" class="job-indicator" title="Running jobs" aria-live="polite">
+              <span class="job-label">Job</span>
+              <span id="jobCount" class="job-count">0</span>
+            </div>
+            <a href="/settings" class="button" style="width: auto; padding: 9px 12px">Settings</a>
           </div>
         </header>
+        <div id="jobsPopover" class="jobs-popover hidden" role="dialog" aria-live="polite">
+          <div class="jobs-popover-head">
+            <div class="jobs-popover-title">Running Jobs</div>
+            <button id="jobsPopoverClose" type="button" class="button">Tutup</button>
+          </div>
+          <div id="jobsPopoverBody" class="jobs-popover-body"></div>
+        </div>
 
         <section id="chatLog" class="chat-log">
           <div class="empty" id="emptyState">
-            <h3 style="margin-top: 0">Ready for CLI-based AI</h3>
+            <h3 style="margin-top: 0">Siap</h3>
             <p class="small" style="margin-bottom: 0">
-              Pilih folder project dari master path, buat session, lalu kirim prompt. Chat tersimpan dan bisa dibuka lagi kapan saja.
+              Pilih project, buat session jika perlu, lalu kirim prompt.
             </p>
           </div>
         </section>
 
         <form id="askForm" class="composer">
-          <div class="composer-row">
-            <select id="providerSelect" class="select"></select>
-            <textarea id="promptInput" class="textarea" placeholder="Tulis prompt untuk CLI provider..." required></textarea>
-            <button id="sendButton" class="button primary" type="submit" style="width: auto; min-width: 90px">Send</button>
+          <div class="status-row">
+            <div id="statusText" class="status">Status: idle</div>
+            <div id="queueInfo" class="status-queue" hidden>Queue: 0</div>
           </div>
-          <div id="statusText" class="status">Status: idle</div>
+          <div class="composer-box">
+            <textarea
+              id="promptInput"
+              class="textarea composer-input"
+              placeholder="Tulis prompt..."
+              required
+            ></textarea>
+            <div class="composer-actions">
+              <button id="sendButton" class="button primary send-inline" type="submit" aria-label="Send">></button>
+              <button id="stopButton" class="button stop-inline" type="button" aria-label="Stop" hidden>Stop</button>
+            </div>
+          </div>
+          <div class="composer-controls-bottom">
+          <div class="chip-icon-wrap icon-only" data-icon="🤖">
+            <select id="modelSelect" class="chip-select icon-only" aria-label="Model"></select>
+          </div>
+          <div class="chip-icon-wrap icon-model icon-input" style="display: none" id="modelInputWrap">
+            <input
+              id="modelInput"
+              class="chip-input"
+              placeholder=""
+              autocomplete="off"
+              aria-label="Model manual"
+            />
+          </div>
+          <div class="chip-icon-wrap icon-only" data-icon="🧠">
+            <select id="reasoningSelect" class="chip-select icon-only" aria-label="Reasoning">
+              <option value="low">Reasoning: Low</option>
+              <option value="medium" selected>Reasoning: Medium</option>
+              <option value="high">Reasoning: High</option>
+              <option value="xhigh">Reasoning: Extra High</option>
+            </select>
+          </div>
+          <div class="chip-icon-wrap icon-only" data-icon="⚙️">
+            <select id="modeSelect" class="chip-select icon-only" aria-label="Mode">
+              <option value="normal">Mode: Normal</option>
+              <option value="plan">Mode: Plan</option>
+            </select>
+          </div>
+          </div>
         </form>
       </main>
     </div>
