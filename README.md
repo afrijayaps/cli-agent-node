@@ -117,6 +117,7 @@ Verifikasi:
 
 ```bash
 codex --help
+printf "/status\n" | codex
 codex exec "say ok"
 ```
 

@@ -66,6 +66,7 @@ Login codex di server:
 
 ```bash
 codex login
+printf "/status\n" | codex
 ```
 
 Tes non-interaktif (dipakai server):

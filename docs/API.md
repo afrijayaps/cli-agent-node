@@ -39,6 +39,7 @@ Catatan:
 - Jika primary gagal dan fallback diset, server mencoba fallback.
 - `model`, `reasoning`, `mode` opsional, jika didukung provider.
 - Nilai `reasoning`: `low`, `medium`, `high`, `xhigh` (default `medium`).
+- Jika prompt diawali command `/status`, backend tidak memanggil provider dan langsung membalas status Codex saat ini.
 
 Success `200`:
 
@@ -159,6 +160,33 @@ Validation error `400` (provider invalid):
 ```json
 { "error": "Validation error", "details": "aiPrimary must be a supported provider." }
 ```
+
+### `GET /api/auth-status?provider=codex`
+
+Success `200`:
+
+```json
+{
+  "provider": "codex",
+  "status": "logged_in",
+  "details": "authenticated",
+  "account": "chat.mbak.asri@gmail.com (Plus)",
+  "model": "gpt-5.2-codex (reasoning low, summaries auto)",
+  "session": "019ce5db-59a2-7453-8a55-cdb2c1ce821e",
+  "limit5h": "[███████████████░░░░░] 75% left (resets 09:30)",
+  "limitWeekly": "[██████░░░░░░░░░░░░░░] 32% left (resets 21:13 on 18 Mar)"
+}
+```
+
+Possible `status` values:
+- `logged_in`
+- `logged_out`
+- `cli_missing`
+- `error`
+
+Notes:
+- Backend runs `printf "/status\n" | codex`.
+- Jika output mengandung `unrecognized subcommand/unknown subcommand/unexpected argument`, status menjadi `error`.
 
 Contoh update master root:
 
@@ -399,6 +427,7 @@ Catatan:
 - Request ini menjalankan CLI provider dengan `cwd` di folder project aktif (`project.projectPath`).
 - Jika primary gagal dan fallback diset di settings, server akan mencoba fallback.
 - Nilai `reasoning`: `low`, `medium`, `high`, `xhigh` (default `medium`).
+- Jika prompt diawali command `/status`, backend skip provider call dan mengembalikan status Codex saat ini (provider response bertipe `system` di message session).
 
 Success `200`:
 

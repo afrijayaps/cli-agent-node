@@ -2,6 +2,7 @@ import { api } from './api.js';
 import { applyTheme, formatRelative } from './theme.js';
 import { createProcessUI } from './process-ui.js';
 import { createMessageQueue } from './message-queue.js';
+import { buildAssistantMessage, buildUserMessage } from './message-components.js';
 
 const els = {
   sidePanel: document.getElementById('sidePanel'),
@@ -29,6 +30,7 @@ const els = {
   promptInput: document.getElementById('promptInput'),
   sendButton: document.getElementById('sendButton'),
   stopButton: document.getElementById('stopButton'),
+  processInline: document.getElementById('processInline'),
   statusText: document.getElementById('statusText'),
   queueInfo: document.getElementById('queueInfo'),
   jobIndicator: document.getElementById('jobIndicator'),
@@ -69,6 +71,8 @@ const state = {
     showAll: false,
     compact: false,
     hasEdits: false,
+    projectId: '',
+    sessionId: '',
   },
   requestAbortController: null,
   assistantFlashMessageId: '',
@@ -76,7 +80,6 @@ const state = {
   chatWarning: null,
   busy: false,
   queueSize: 0,
-  drainingQueue: false,
   jobsCount: 0,
   jobs: [],
   jobsTimer: null,
@@ -92,13 +95,371 @@ const PROCESS_LABELS = {
   stopped: 'Process stopped by user',
 };
 
-const messageQueue = createMessageQueue({
-  onChange(snapshot) {
-    state.queueSize = snapshot.size;
-    updateQueueInfo();
+const sessionQueues = new Map();
+const sessionQueueState = new Map();
+const localAwaitingBySession = new Map();
+const serverAwaitingBySession = new Map();
+const abortControllersBySession = new Map();
+const inflightPromptKeys = new Map();
+const sessionDomCache = new Map();
+
+const CHAT_WINDOW_SIZE = 80;
+const CHAT_WINDOW_STEP = 50;
+const SESSION_DOM_CACHE_LIMIT = 12;
+
+function createRenderCacheState() {
+  return {
+    initialized: false,
+    sessionId: '',
+    totalMessageCount: 0,
+    visibleStart: 0,
+    visibleEnd: 0,
+    lastVisibleMessageKey: '',
+    lastSessionUpdatedAt: '',
+    warningKey: '',
+    assistantFlashId: '',
+    empty: false,
+  };
+}
+
+function createSessionDomState(sessionId) {
+  const root = document.createElement('div');
+  root.className = 'chat-session-view';
+  root.style.display = 'flex';
+  root.style.flexDirection = 'column';
+  root.style.gap = '16px';
+
+  const messageList = document.createElement('div');
+  messageList.className = 'chat-session-messages';
+  messageList.style.display = 'flex';
+  messageList.style.flexDirection = 'column';
+  messageList.style.gap = '16px';
+
+  const footer = document.createElement('div');
+  footer.className = 'chat-session-footer';
+  footer.style.display = 'flex';
+  footer.style.flexDirection = 'column';
+  footer.style.gap = '16px';
+
+  root.append(messageList, footer);
+
+  return {
+    sessionId,
+    root,
+    messageList,
+    footer,
+    renderCache: createRenderCacheState(),
+    scrollTop: 0,
+    mounted: false,
+    loadingOlder: false,
+    pendingPrependRestore: null,
+  };
+}
+
+function trimSessionDomCache(activeSessionId = '') {
+  while (sessionDomCache.size > SESSION_DOM_CACHE_LIMIT) {
+    let removed = false;
+    for (const key of sessionDomCache.keys()) {
+      if (!key || key === activeSessionId) {
+        continue;
+      }
+      sessionDomCache.delete(key);
+      removed = true;
+      break;
+    }
+    if (!removed) {
+      break;
+    }
+  }
+}
+
+function getSessionDomState(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  let entry = sessionDomCache.get(sessionId);
+  if (!entry) {
+    entry = createSessionDomState(sessionId);
+    sessionDomCache.set(sessionId, entry);
+    trimSessionDomCache(sessionId);
+    return entry;
+  }
+
+  sessionDomCache.delete(sessionId);
+  sessionDomCache.set(sessionId, entry);
+  return entry;
+}
+
+function mountSessionDomState(sessionId) {
+  const entry = getSessionDomState(sessionId);
+  if (!entry) {
+    return null;
+  }
+
+  if (
+    entry.mounted &&
+    entry.root.parentNode === els.chatLog &&
+    els.emptyState.parentNode !== els.chatLog
+  ) {
+    return entry;
+  }
+
+  for (const domState of sessionDomCache.values()) {
+    if (!domState || !domState.mounted) {
+      continue;
+    }
+    domState.scrollTop = els.chatLog.scrollTop;
+    domState.mounted = false;
+    if (domState.root.parentNode === els.chatLog) {
+      els.chatLog.removeChild(domState.root);
+    }
+  }
+
+  if (els.emptyState.parentNode === els.chatLog) {
+    els.chatLog.removeChild(els.emptyState);
+  }
+
+  els.chatLog.innerHTML = '';
+  els.chatLog.appendChild(entry.root);
+  entry.mounted = true;
+  els.chatLog.scrollTop = entry.scrollTop || 0;
+  return entry;
+}
+
+function restorePrependScroll(domState) {
+  if (!domState || !domState.pendingPrependRestore) {
+    return false;
+  }
+
+  const previous = domState.pendingPrependRestore;
+  domState.pendingPrependRestore = null;
+  const delta = els.chatLog.scrollHeight - previous.scrollHeight;
+  els.chatLog.scrollTop = previous.scrollTop + Math.max(0, delta);
+  return true;
+}
+
+function ensureVisibleWindow(domState, totalMessageCount, shouldStickToBottom, force = false) {
+  if (!domState) {
+    return { start: 0, end: totalMessageCount };
+  }
+
+  const cache = domState.renderCache;
+  const hasRange = cache.initialized && cache.visibleEnd >= cache.visibleStart;
+  const oldVisibleCount = hasRange ? cache.visibleEnd - cache.visibleStart : 0;
+  const baseWindow = Math.max(oldVisibleCount, CHAT_WINDOW_SIZE);
+
+  if (!hasRange || force || cache.sessionId !== domState.sessionId || totalMessageCount < cache.totalMessageCount) {
+    const start = Math.max(0, totalMessageCount - CHAT_WINDOW_SIZE);
+    cache.visibleStart = start;
+    cache.visibleEnd = totalMessageCount;
+    return { start, end: totalMessageCount };
+  }
+
+  if (cache.visibleEnd > totalMessageCount) {
+    cache.visibleEnd = totalMessageCount;
+  }
+
+  if (cache.visibleEnd < totalMessageCount) {
+    if (shouldStickToBottom) {
+      cache.visibleEnd = totalMessageCount;
+      cache.visibleStart = Math.max(0, totalMessageCount - baseWindow);
+    } else {
+      cache.visibleEnd = totalMessageCount;
+    }
+  }
+
+  if (cache.visibleStart > cache.visibleEnd) {
+    cache.visibleStart = Math.max(0, cache.visibleEnd - CHAT_WINDOW_SIZE);
+  }
+
+  return { start: cache.visibleStart, end: cache.visibleEnd };
+}
+
+function loadOlderMessagesForActiveSession() {
+  const sessionId = state.activeSessionId;
+  const session = state.activeSession;
+  if (!sessionId || !session || !Array.isArray(session.messages) || session.messages.length === 0) {
+    return;
+  }
+
+  const domState = getSessionDomState(sessionId);
+  if (!domState || domState.loadingOlder) {
+    return;
+  }
+
+  const cache = domState.renderCache;
+  if (!cache.initialized || cache.visibleStart <= 0) {
+    return;
+  }
+
+  domState.loadingOlder = true;
+  domState.pendingPrependRestore = {
+    scrollHeight: els.chatLog.scrollHeight,
+    scrollTop: els.chatLog.scrollTop,
+  };
+  cache.visibleStart = Math.max(0, cache.visibleStart - CHAT_WINDOW_STEP);
+  renderMessages({ force: true });
+}
+
+function handleChatScroll() {
+  const domState = getSessionDomState(state.activeSessionId);
+  if (!domState || !domState.mounted) {
+    return;
+  }
+
+  domState.scrollTop = els.chatLog.scrollTop;
+  if (els.chatLog.scrollTop <= 120) {
+    loadOlderMessagesForActiveSession();
+  }
+}
+
+function getQueueKey(projectId, sessionId) {
+  if (!projectId || !sessionId) {
+    return '';
+  }
+  return `${projectId}::${sessionId}`;
+}
+
+function isSessionAwaiting(projectId, sessionId) {
+  const key = getQueueKey(projectId, sessionId);
+  if (!key) {
+    return false;
+  }
+  return localAwaitingBySession.has(key) || serverAwaitingBySession.has(key);
+}
+
+function setLocalAwaiting(projectId, sessionId, value) {
+  const key = getQueueKey(projectId, sessionId);
+  if (!key) {
+    return;
+  }
+  if (value) {
+    localAwaitingBySession.set(key, true);
+  } else {
+    localAwaitingBySession.delete(key);
+  }
+  if (projectId === state.activeProjectId && sessionId === state.activeSessionId) {
+    state.awaitingAssistant = isSessionAwaiting(projectId, sessionId);
     updateSendButtonState();
-  },
-});
+  }
+}
+
+function setAbortController(projectId, sessionId, controller) {
+  const key = getQueueKey(projectId, sessionId);
+  if (!key) {
+    return;
+  }
+  if (controller) {
+    abortControllersBySession.set(key, controller);
+  } else {
+    abortControllersBySession.delete(key);
+  }
+  if (projectId === state.activeProjectId && sessionId === state.activeSessionId) {
+    state.requestAbortController = controller || null;
+    updateSendButtonState();
+  }
+}
+
+function setServerAwaitingFromJobs(jobs) {
+  serverAwaitingBySession.clear();
+  if (!Array.isArray(jobs)) {
+    return;
+  }
+  jobs.forEach((job) => {
+    if (!job || job.type !== 'session') {
+      return;
+    }
+    const key = getQueueKey(job.projectId, job.sessionId);
+    if (key) {
+      serverAwaitingBySession.set(key, true);
+    }
+  });
+}
+
+function isActiveAwaiting() {
+  return isSessionAwaiting(state.activeProjectId, state.activeSessionId);
+}
+
+function hasOtherSessionActivity(projectId, sessionId) {
+  const currentKey = getQueueKey(projectId, sessionId);
+  for (const key of localAwaitingBySession.keys()) {
+    if (key !== currentKey) {
+      return true;
+    }
+  }
+  for (const key of serverAwaitingBySession.keys()) {
+    if (key !== currentKey) {
+      return true;
+    }
+  }
+  for (const [key, queue] of sessionQueues.entries()) {
+    if (key === currentKey) {
+      continue;
+    }
+    if (queue && queue.size() > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSessionBusy(projectId, sessionId) {
+  if (isSessionAwaiting(projectId, sessionId)) {
+    return true;
+  }
+  const key = getQueueKey(projectId, sessionId);
+  if (key && sessionQueues.has(key)) {
+    return sessionQueues.get(key).size() > 0;
+  }
+  return false;
+}
+
+function makePromptKey({ projectId, sessionId, provider, model, reasoning, mode, prompt }) {
+  return [
+    projectId || '',
+    sessionId || '',
+    provider || '',
+    model || '',
+    reasoning || '',
+    mode || '',
+    prompt || '',
+  ].join('::');
+}
+
+function getQueueState(projectId, sessionId) {
+  const key = getQueueKey(projectId, sessionId);
+  if (!key) {
+    return null;
+  }
+
+  if (!sessionQueues.has(key)) {
+    const queue = createMessageQueue({
+      onChange(snapshot) {
+        if (state.activeProjectId === projectId && state.activeSessionId === sessionId) {
+          state.queueSize = snapshot.size;
+          updateQueueInfo();
+          updateSendButtonState();
+        }
+      },
+    });
+    sessionQueues.set(key, queue);
+    sessionQueueState.set(key, { draining: false });
+  }
+
+  return {
+    key,
+    queue: sessionQueues.get(key),
+    state: sessionQueueState.get(key),
+  };
+}
+
+function syncActiveQueueSize() {
+  const entry = getQueueState(state.activeProjectId, state.activeSessionId);
+  state.queueSize = entry ? entry.queue.size() : 0;
+  updateQueueInfo();
+  updateSendButtonState();
+}
 
 function scheduleAssistantFlash(messageId) {
   if (!messageId) {
@@ -274,7 +635,8 @@ function getSessionJob(projectId, sessionId) {
 }
 
 function hasLocalRunningJob() {
-  return Boolean(state.awaitingAssistant && state.activeProjectId && state.activeSessionId);
+  const key = getQueueKey(state.process.projectId, state.process.sessionId);
+  return Boolean(key && localAwaitingBySession.has(key));
 }
 
 function getDisplayedJobsCount() {
@@ -283,7 +645,7 @@ function getDisplayedJobsCount() {
     return serverCount;
   }
 
-  const trackedByServer = Boolean(getSessionJob(state.activeProjectId, state.activeSessionId));
+  const trackedByServer = Boolean(getSessionJob(state.process.projectId, state.process.sessionId));
   return trackedByServer ? serverCount : serverCount + 1;
 }
 
@@ -293,7 +655,7 @@ function getDisplayedJobsList() {
     return jobs;
   }
 
-  const trackedByServer = Boolean(getSessionJob(state.activeProjectId, state.activeSessionId));
+  const trackedByServer = Boolean(getSessionJob(state.process.projectId, state.process.sessionId));
   if (trackedByServer) {
     return jobs;
   }
@@ -304,8 +666,8 @@ function getDisplayedJobsList() {
       : new Date().toISOString();
   jobs.unshift({
     type: 'session',
-    projectId: state.activeProjectId,
-    sessionId: state.activeSessionId,
+    projectId: state.process.projectId,
+    sessionId: state.process.sessionId,
     provider: state.activeProvider,
     model: state.preferences.model,
     reasoning: state.preferences.reasoning,
@@ -317,7 +679,13 @@ function getDisplayedJobsList() {
 }
 
 function getLocalSessionActivity(sessionId) {
-  if (!state.awaitingAssistant || !state.activeSessionId || sessionId !== state.activeSessionId) {
+  if (
+    !isActiveAwaiting() ||
+    !state.process.sessionId ||
+    !state.process.projectId ||
+    state.process.projectId !== state.activeProjectId ||
+    sessionId !== state.process.sessionId
+  ) {
     return '';
   }
 
@@ -398,7 +766,39 @@ function refreshSessionRuntimeIndicators() {
     return;
   }
 
-  renderSessionList();
+  const items = els.sessionList.querySelectorAll('.session-item');
+  if (!items.length) {
+    renderSessionList();
+    return;
+  }
+
+  items.forEach((item) => {
+    const sessionId = item.dataset.sessionId;
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    item.classList.toggle('active', sessionId === state.activeSessionId);
+
+    const runtime = getSessionRuntimeStatus(session);
+    const runtimeDot = item.querySelector('.session-runtime');
+    if (runtimeDot) {
+      runtimeDot.className = `session-runtime${runtime && runtime.tone ? ` ${runtime.tone}` : ''}`;
+      runtimeDot.title = runtime && runtime.label ? runtime.label : 'Idle';
+    }
+
+    const meta = item.querySelector('.small');
+    if (meta) {
+      const statusSuffix = runtime && runtime.label ? ` • ${runtime.label}` : '';
+      meta.textContent = `${session.messageCount || 0} msg • ${formatRelative(session.updatedAt)}${statusSuffix}`;
+    }
+
+    const deleteButton = item.querySelector('.session-delete');
+    if (deleteButton) {
+      deleteButton.disabled = state.busy || isSessionBusy(state.activeProjectId, sessionId);
+    }
+  });
 }
 
 async function loadJobsIndicator() {
@@ -408,6 +808,8 @@ async function loadJobsIndicator() {
     const count = typeof data.count === 'number' ? data.count : jobs.length;
     state.jobs = jobs;
     state.jobsCount = count;
+    setServerAwaitingFromJobs(jobs);
+    syncProcessFromJobs();
     renderJobsIndicator();
     renderJobsPopover();
     refreshSessionRuntimeIndicators();
@@ -443,13 +845,13 @@ function updateQueueInfo() {
 }
 
 function updateSendButtonState() {
-  const canSend = state.awaitingAssistant || !state.busy;
+  const canSend = isActiveAwaiting() || !state.busy;
   els.sendButton.disabled = !canSend;
   els.sendButton.textContent = '>';
   els.sendButton.classList.remove('stop');
 
   if (els.stopButton) {
-    if (state.awaitingAssistant) {
+    if (isActiveAwaiting()) {
       els.stopButton.hidden = false;
       els.stopButton.disabled = !state.requestAbortController;
     } else {
@@ -605,7 +1007,6 @@ function setBusy(value) {
   state.busy = value;
   updateSendButtonState();
   updateQueueInfo();
-  updateQueueInfo();
 }
 
 function scrollChatToBottom() {
@@ -737,7 +1138,7 @@ function addProcessEventsFromCliProgress(progress) {
 }
 
 function stopActiveRequest() {
-  if (!state.awaitingAssistant || !state.requestAbortController) {
+  if (!isActiveAwaiting() || !state.requestAbortController) {
     return;
   }
 
@@ -762,105 +1163,80 @@ function getSelectedProject() {
   return state.projects.find((project) => project.id === state.activeProjectId) || null;
 }
 
-function extractMessageParts(text) {
-  if (typeof text !== 'string' || text.length === 0) {
-    return [];
+function getMessageKey(message, index) {
+  if (!message || typeof message !== 'object') {
+    return `unknown-${index}`;
   }
 
-  const parts = [];
-  const pattern = /```([^\n`]*)\n?([\s\S]*?)```/g;
-  let lastIndex = 0;
-  let match;
+  const id = typeof message.id === 'string' ? message.id : '';
+  const role = typeof message.role === 'string' ? message.role : '';
+  const createdAt = typeof message.createdAt === 'string' ? message.createdAt : '';
+  const content =
+    typeof message.content === 'string' ? message.content.trim().slice(0, 32) : '';
 
-  while ((match = pattern.exec(text)) !== null) {
-    const before = text.slice(lastIndex, match.index).replace(/^\n+|\n+$/g, '');
-    if (before.trim().length > 0) {
-      parts.push({ type: 'text', value: before });
-    }
-
-    const language = (match[1] || 'text').trim() || 'text';
-    const code = (match[2] || '').replace(/\n$/, '');
-    if (code.trim().length > 0) {
-      parts.push({ type: 'code', language, code });
-    }
-    lastIndex = pattern.lastIndex;
-  }
-
-  const tail = text.slice(lastIndex).replace(/^\n+|\n+$/g, '');
-  if (tail.trim().length > 0) {
-    parts.push({ type: 'text', value: tail });
-  }
-
-  if (parts.length === 0 && text.trim().length > 0) {
-    parts.push({ type: 'text', value: text.trim() });
-  }
-
-  return parts;
+  return `${id}|${role}|${createdAt}|${content}`;
 }
 
-function buildAssistantMessage(message, isLatestAssistant, shouldFlash, animationDelay) {
-  const parts = extractMessageParts(message.content);
-  if (parts.length === 0) {
-    return null;
+function getWarningKey(warning) {
+  if (!warning || typeof warning !== 'object') {
+    return '';
   }
+  return [
+    warning.level || '',
+    warning.provider || '',
+    warning.code === null || typeof warning.code === 'undefined' ? '' : String(warning.code),
+    warning.title || '',
+    warning.details || '',
+    warning.hint || '',
+    warning.createdAt || '',
+  ].join('|');
+}
 
-  const box = document.createElement('article');
-  box.className = `message assistant-flat enter${isLatestAssistant ? ' assistant-live' : ''}${
-    shouldFlash ? ' assistant-arrived' : ''
-  }`;
-  box.style.animationDelay = animationDelay;
+function isNearBottom(container, threshold = 80) {
+  if (!container) {
+    return false;
+  }
+  const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+  return distance <= threshold;
+}
+
+function escapeSelector(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  if (typeof window !== 'undefined' && window.CSS && typeof window.CSS.escape === 'function') {
+    return window.CSS.escape(value);
+  }
+  return value.replace(/[\"\\]/g, '\\$&');
+}
+
+function buildWarningNode(warning) {
+  const warningBox = document.createElement('article');
+  const level = warning.level === 'info' ? 'info' : 'error';
+  warningBox.className = `message warning ${level} enter`;
+  warningBox.dataset.role = 'warning';
 
   const meta = document.createElement('div');
-  meta.className = 'message-meta';
-  meta.textContent = `Assistant (${message.provider || 'cli'}) • ${formatRelative(message.createdAt)}`;
-  box.appendChild(meta);
+  meta.className = 'message-meta warning-meta';
+  meta.textContent = `Peringatan (${warning.provider}) • ${formatRelative(warning.createdAt)}`;
 
-  parts.forEach((part) => {
-    if (part.type === 'text') {
-      const textNode = document.createElement('div');
-      textNode.className = 'assistant-flat-text';
-      textNode.textContent = part.value;
-      box.appendChild(textNode);
-      return;
-    }
+  const title = document.createElement('div');
+  title.className = 'warning-title';
+  title.textContent = warning.title || 'Terjadi masalah pada proses.';
 
-    const card = document.createElement('div');
-    card.className = 'code-card compact';
+  const content = document.createElement('div');
+  content.className = 'message-content warning-content';
+  const lines = [warning.details];
+  if (warning.code !== null) {
+    lines.push(`Code: ${warning.code}`);
+  }
+  if (warning.hint) {
+    lines.push(`Saran: ${warning.hint}`);
+  }
+  content.textContent = lines.join('\n');
 
-    const head = document.createElement('div');
-    head.className = 'code-card-head';
-
-    const label = document.createElement('span');
-    label.className = 'code-card-label';
-    label.textContent = part.language;
-
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'code-copy';
-    copyBtn.textContent = 'Copy';
-    copyBtn.addEventListener('click', async () => {
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          await navigator.clipboard.writeText(part.code);
-          setStatus('code copied');
-        } else {
-          throw new Error('clipboard unavailable');
-        }
-      } catch (_error) {
-        setStatus('failed to copy code', true);
-      }
-    });
-
-    head.append(label, copyBtn);
-
-    const pre = document.createElement('pre');
-    pre.textContent = part.code;
-
-    card.append(head, pre);
-    box.appendChild(card);
-  });
-
-  return box;
+  warningBox.append(meta, title, content);
+  return warningBox;
 }
 
 function renderProjectSelect() {
@@ -890,40 +1266,56 @@ function renderProjectSelect() {
   els.projectSelect.value = state.activeProjectId;
 }
 
+function renderSessionItem(session, index) {
+  const item = document.createElement('li');
+  item.className = `session-item enter${session.id === state.activeSessionId ? ' active' : ''}`;
+  item.style.animationDelay = `${Math.min(index * 24, 120)}ms`;
+  item.dataset.sessionId = session.id;
+
+  const head = document.createElement('div');
+  head.className = 'session-row';
+
+  const runtime = getSessionRuntimeStatus(session);
+  const runtimeDot = document.createElement('span');
+  runtimeDot.className = `session-runtime${runtime && runtime.tone ? ` ${runtime.tone}` : ''}`;
+  runtimeDot.title = runtime && runtime.label ? runtime.label : 'Idle';
+
+  const titleWrap = document.createElement('div');
+  titleWrap.className = 'session-title-wrap';
+
+  const title = document.createElement('div');
+  title.className = 'session-title';
+  title.textContent = getSessionDisplayTitle(session);
+  titleWrap.append(runtimeDot, title);
+
+  const deleteButton = document.createElement('button');
+  deleteButton.type = 'button';
+  deleteButton.className = 'button danger session-delete';
+  deleteButton.textContent = 'Hapus';
+  deleteButton.disabled = state.busy || isSessionBusy(state.activeProjectId, session.id);
+  deleteButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    deleteSession(session.id);
+  });
+
+  head.append(titleWrap, deleteButton);
+
+  const meta = document.createElement('div');
+  meta.className = 'small';
+  const statusSuffix = runtime && runtime.label ? ` • ${runtime.label}` : '';
+  meta.textContent = `${session.messageCount || 0} msg • ${formatRelative(session.updatedAt)}${statusSuffix}`;
+
+  item.append(head, meta);
+  item.addEventListener('click', () => onSessionSelect(session.id));
+
+  return item;
+}
+
 function renderSessionList() {
   els.sessionList.innerHTML = '';
 
   state.sessions.forEach((session, index) => {
-    const item = document.createElement('li');
-    item.className = `session-item enter${session.id === state.activeSessionId ? ' active' : ''}`;
-    item.style.animationDelay = `${Math.min(index * 24, 120)}ms`;
-    item.dataset.sessionId = session.id;
-
-    const head = document.createElement('div');
-    head.className = 'session-row';
-
-    const title = document.createElement('div');
-    title.className = 'session-title';
-    title.textContent = getSessionDisplayTitle(session);
-
-    const deleteButton = document.createElement('button');
-    deleteButton.type = 'button';
-    deleteButton.className = 'button danger session-delete';
-    deleteButton.textContent = 'Hapus';
-    deleteButton.disabled = state.busy || state.awaitingAssistant;
-    deleteButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      deleteSession(session.id);
-    });
-
-    const meta = document.createElement('div');
-    meta.className = 'small';
-    meta.textContent = `${session.messageCount || 0} msg • ${formatRelative(session.updatedAt)}`;
-
-    head.append(title, deleteButton);
-    item.append(head, meta);
-    item.addEventListener('click', () => onSessionSelect(session.id));
-    els.sessionList.appendChild(item);
+    els.sessionList.appendChild(renderSessionItem(session, index));
   });
 }
 
@@ -953,117 +1345,223 @@ function updatePromptPlaceholder() {
   els.promptInput.placeholder = 'Tulis prompt...';
 }
 
-function renderMessages() {
-  const session = state.activeSession;
-  const hasMessages = session && Array.isArray(session.messages) && session.messages.length > 0;
-  const hasWarning = !!state.chatWarning;
-  const hasProcess = state.process.active || state.process.isError || state.awaitingAssistant;
+let renderScheduled = false;
+let renderNeedsFull = false;
 
-  els.chatLog.innerHTML = '';
+function renderMessages(options = {}) {
+  if (options && options.force) {
+    renderNeedsFull = true;
+  }
 
-  if (!hasMessages && !hasWarning && !hasProcess) {
-    els.chatLog.appendChild(els.emptyState);
+  if (renderScheduled) {
     return;
   }
 
-  if (hasMessages) {
-    session.messages.forEach((message, index) => {
+  renderScheduled = true;
+  const schedule = typeof window !== 'undefined' && window.requestAnimationFrame
+    ? window.requestAnimationFrame
+    : (cb) => setTimeout(cb, 16);
+
+  schedule(() => {
+    renderScheduled = false;
+    const force = renderNeedsFull;
+    renderNeedsFull = false;
+    renderMessagesNow(force);
+  });
+}
+
+function renderMessagesNow(force = false) {
+  const session = state.activeSession;
+  const messages = session && Array.isArray(session.messages) ? session.messages : [];
+  const hasMessages = messages.length > 0;
+  const hasWarning = !!state.chatWarning;
+  const hasProcess = state.process.active || state.process.isError || isActiveAwaiting();
+  const hasProcessForActiveSession =
+    state.process.projectId === state.activeProjectId &&
+    state.process.sessionId === state.activeSessionId &&
+    hasProcess;
+  const shouldShowEmpty = !hasMessages && !hasWarning && !hasProcessForActiveSession;
+  const shouldStickToBottom = isNearBottom(els.chatLog) || isActiveAwaiting();
+  const sessionId = session && session.id ? session.id : '';
+  const domState = sessionId ? mountSessionDomState(sessionId) : null;
+  const renderCache = domState ? domState.renderCache : createRenderCacheState();
+
+  if (shouldShowEmpty) {
+    if (domState) {
+      domState.scrollTop = els.chatLog.scrollTop;
+    }
+    if (!renderCache.empty || els.emptyState.parentNode !== els.chatLog) {
+      els.chatLog.innerHTML = '';
+      els.chatLog.appendChild(els.emptyState);
+    }
+
+    renderCache.empty = true;
+    renderCache.initialized = true;
+    renderCache.sessionId = sessionId;
+    renderCache.totalMessageCount = 0;
+    renderCache.visibleStart = 0;
+    renderCache.visibleEnd = 0;
+    renderCache.lastVisibleMessageKey = '';
+    renderCache.lastSessionUpdatedAt = session && session.updatedAt ? session.updatedAt : '';
+    renderCache.warningKey = '';
+    renderCache.assistantFlashId = state.assistantFlashMessageId;
+    return;
+  }
+
+  if (els.emptyState.parentNode === els.chatLog) {
+    els.chatLog.removeChild(els.emptyState);
+  }
+
+  if (!domState) {
+    return;
+  }
+
+  if (renderCache.empty || domState.root.parentNode !== els.chatLog) {
+    mountSessionDomState(sessionId);
+    renderCache.empty = false;
+  }
+
+  const messageCount = messages.length;
+  const sessionUpdatedAt = session && session.updatedAt ? session.updatedAt : '';
+  const { start: visibleStart, end: visibleEnd } = ensureVisibleWindow(
+    domState,
+    messageCount,
+    shouldStickToBottom,
+    force,
+  );
+  const visibleMessages = messages.slice(visibleStart, visibleEnd);
+  const lastVisibleIndex = visibleEnd - 1;
+  const nextLastVisibleKey =
+    visibleMessages.length > 0
+      ? getMessageKey(messages[lastVisibleIndex], lastVisibleIndex)
+      : '';
+  const warningKey = getWarningKey(state.chatWarning);
+
+  const needsFull =
+    force ||
+    !renderCache.initialized ||
+    renderCache.sessionId !== sessionId ||
+    renderCache.totalMessageCount !== messageCount ||
+    renderCache.visibleStart !== visibleStart ||
+    renderCache.visibleEnd !== visibleEnd ||
+    renderCache.lastVisibleMessageKey !== nextLastVisibleKey ||
+    renderCache.lastSessionUpdatedAt !== sessionUpdatedAt ||
+    renderCache.warningKey !== warningKey ||
+    renderCache.assistantFlashId !== state.assistantFlashMessageId;
+
+  if (needsFull) {
+    domState.messageList.innerHTML = '';
+    domState.footer.innerHTML = '';
+
+    visibleMessages.forEach((message, offset) => {
+      const index = visibleStart + offset;
       const isLatestAssistant =
-        message.role === 'assistant' && index === session.messages.length - 1 && !state.awaitingAssistant;
+        message.role === 'assistant' && index === lastVisibleIndex && !isActiveAwaiting();
       const shouldFlash = message.role === 'assistant' && message.id && message.id === state.assistantFlashMessageId;
-      const animationDelay = `${Math.min(index * 32, 160)}ms`;
+      const animationDelay = `${Math.min(offset * 32, 160)}ms`;
 
       if (message.role === 'assistant') {
-        const assistantMessage = buildAssistantMessage(message, isLatestAssistant, shouldFlash, animationDelay);
+        const assistantMessage = buildAssistantMessage({
+          message,
+          isLatestAssistant,
+          shouldFlash,
+          animationDelay,
+          formatRelative,
+          setStatus,
+        });
         if (assistantMessage) {
-          els.chatLog.appendChild(assistantMessage);
+          domState.messageList.appendChild(assistantMessage);
         }
         return;
       }
 
-      const box = document.createElement('article');
-      box.className = `message enter user${shouldFlash ? ' assistant-arrived' : ''}`;
-      box.style.animationDelay = animationDelay;
-
-      const meta = document.createElement('div');
-      meta.className = 'message-meta';
-      meta.textContent = `You • ${formatRelative(message.createdAt)}`;
-
-      const content = document.createElement('div');
-      content.className = 'message-content';
-      content.textContent = message.content;
-
-      box.append(meta, content);
-      els.chatLog.appendChild(box);
+      domState.messageList.appendChild(
+        buildUserMessage({
+          message,
+          shouldFlash,
+          animationDelay,
+          formatRelative,
+        }),
+      );
     });
   }
 
-  if (state.chatWarning) {
-    const warning = state.chatWarning;
-    const warningBox = document.createElement('article');
-    const level = warning.level === 'info' ? 'info' : 'error';
-    warningBox.className = `message warning ${level} enter`;
-
-    const meta = document.createElement('div');
-    meta.className = 'message-meta warning-meta';
-    meta.textContent = `Peringatan (${warning.provider}) • ${formatRelative(warning.createdAt)}`;
-
-    const title = document.createElement('div');
-    title.className = 'warning-title';
-    title.textContent = warning.title || 'Terjadi masalah pada proses.';
-
-    const content = document.createElement('div');
-    content.className = 'message-content warning-content';
-    const lines = [warning.details];
-    if (warning.code !== null) {
-      lines.push(`Code: ${warning.code}`);
-    }
-    if (warning.hint) {
-      lines.push(`Saran: ${warning.hint}`);
-    }
-    content.textContent = lines.join('\n');
-
-    warningBox.append(meta, title, content);
-    els.chatLog.appendChild(warningBox);
+  if (needsFull && hasWarning) {
+    domState.footer.appendChild(buildWarningNode(state.chatWarning));
   }
+  renderCache.empty = false;
+  renderCache.warningKey = warningKey;
 
-  if (hasProcess && renderThinkingPanel && getThinkingSnapshot) {
-    const box = document.createElement('article');
-    box.className = `message assistant typing enter thinking-live${state.process.isError ? ' error' : ' active'}`;
+  renderCache.initialized = true;
+  renderCache.sessionId = sessionId;
+  renderCache.totalMessageCount = messageCount;
+  renderCache.visibleStart = visibleStart;
+  renderCache.visibleEnd = visibleEnd;
+  renderCache.lastVisibleMessageKey = nextLastVisibleKey;
+  renderCache.lastSessionUpdatedAt = sessionUpdatedAt;
+  renderCache.assistantFlashId = state.assistantFlashMessageId;
 
-    const meta = document.createElement('div');
-    meta.className = 'message-meta hidden';
-
-    const content = document.createElement('div');
-    content.className = 'message-content';
-    content.innerHTML = renderThinkingPanel(getThinkingSnapshot());
-
-    box.append(meta, content);
-    els.chatLog.appendChild(box);
+  if (!isActiveAwaiting()) {
+    const currentLive = domState.messageList.querySelectorAll('.message.assistant-flat.assistant-live');
+    currentLive.forEach((node) => node.classList.remove('assistant-live'));
+    const lastAssistant = [...visibleMessages].reverse().find((message) => message.role === 'assistant');
+    if (lastAssistant) {
+      const selector = lastAssistant.id
+        ? `[data-message-id="${escapeSelector(lastAssistant.id)}"]`
+        : null;
+      const target = selector ? domState.messageList.querySelector(selector) : null;
+      if (target) {
+        target.classList.add('assistant-live');
+      }
+    }
   }
 
   renderJobsIndicator();
-  scrollChatToBottom();
+  if (restorePrependScroll(domState)) {
+    domState.loadingOlder = false;
+  } else if (shouldStickToBottom) {
+    scrollChatToBottom();
+  }
+
+  if (els.processInline && renderProcessInlinePanel && getThinkingSnapshot) {
+    if (!hasProcessForActiveSession) {
+      els.processInline.hidden = true;
+      els.processInline.innerHTML = '';
+    } else {
+      els.processInline.hidden = false;
+      els.processInline.innerHTML = renderProcessInlinePanel(getThinkingSnapshot());
+    }
+  }
+
+  domState.scrollTop = els.chatLog.scrollTop;
+  domState.loadingOlder = false;
 }
 
 let processUI = null;
 let getThinkingSnapshot = null;
-let renderThinkingPanel = null;
+let renderProcessInlinePanel = null;
 
 processUI = createProcessUI({
   chatLog: els.chatLog,
+  toggleRoot: els.processInline || els.chatLog,
   processState: state.process,
   renderMessages,
   labels: PROCESS_LABELS,
 });
 
 getThinkingSnapshot = processUI.getSnapshot;
-renderThinkingPanel = processUI.renderThinkingPanel;
+renderProcessInlinePanel = processUI.renderProcessInlinePanel;
 
 function setProcessStep(label) {
   state.process.label = label;
   if (state.process.startedAt > 0) {
     state.process.elapsedMs = Date.now() - state.process.startedAt;
+  }
+  if (!state.process.projectId) {
+    state.process.projectId = state.activeProjectId || '';
+  }
+  if (!state.process.sessionId) {
+    state.process.sessionId = state.activeSessionId || '';
   }
   refreshSessionRuntimeIndicators();
   renderMessages();
@@ -1079,6 +1577,8 @@ function startProcess(label = PROCESS_LABELS.waiting) {
   state.process.exiting = false;
   state.process.events = [];
   state.process.showAll = false;
+  state.process.projectId = state.activeProjectId || '';
+  state.process.sessionId = state.activeSessionId || '';
   renderMessages();
 }
 
@@ -1093,7 +1593,49 @@ function stopProcess({ isError = false, finalLabel = '' } = {}) {
   }
   state.process.visible = false;
   state.process.exiting = false;
+  state.process.projectId = '';
+  state.process.sessionId = '';
   renderMessages();
+}
+
+function syncProcessFromJobs() {
+  const projectId = state.activeProjectId;
+  const sessionId = state.activeSessionId;
+  if (!projectId || !sessionId) {
+    return;
+  }
+
+  const job = getSessionJob(projectId, sessionId);
+  if (job) {
+    state.awaitingAssistant = true;
+    if (
+      !state.process.active ||
+      state.process.projectId !== projectId ||
+      state.process.sessionId !== sessionId
+    ) {
+      state.process.active = true;
+      state.process.label = PROCESS_LABELS.waiting;
+      state.process.startedAt = job.startedAt ? new Date(job.startedAt).getTime() : Date.now();
+      state.process.elapsedMs = Date.now() - state.process.startedAt;
+      state.process.isError = false;
+      state.process.visible = false;
+      state.process.exiting = false;
+      state.process.events = [];
+      state.process.showAll = false;
+      state.process.projectId = projectId;
+      state.process.sessionId = sessionId;
+    }
+  } else if (!localAwaitingBySession.has(getQueueKey(projectId, sessionId))) {
+    state.awaitingAssistant = false;
+    if (
+      state.process.active &&
+      state.process.projectId === projectId &&
+      state.process.sessionId === sessionId
+    ) {
+      stopProcess();
+    }
+  }
+  updateSendButtonState();
 }
 
 async function loadMetaAndSettings() {
@@ -1170,7 +1712,7 @@ async function loadProjects() {
   renderProjectSelect();
 
   if (state.activeProjectId) {
-    await loadSessions(state.activeProjectId, { autoSelect: false, useStored: false });
+    await loadSessions(state.activeProjectId, { autoSelect: true, useStored: true });
   } else {
     state.sessions = [];
     state.activeSessionId = '';
@@ -1186,6 +1728,12 @@ async function loadSessions(projectId, options = {}) {
   const { autoSelect = true, useStored = true } = options;
   const data = await api.getSessions(projectId);
   state.sessions = data.sessions || [];
+  const validSessionIds = new Set(state.sessions.map((session) => session.id));
+  for (const key of [...sessionDomCache.keys()]) {
+    if (!validSessionIds.has(key) && key !== state.activeSessionId) {
+      sessionDomCache.delete(key);
+    }
+  }
 
   let nextActiveId = state.activeSessionId;
   if (useStored) {
@@ -1213,13 +1761,14 @@ async function loadSessions(projectId, options = {}) {
   } else {
     state.activeSession = null;
     applySessionPreferences(null);
+    syncActiveQueueSize();
     renderHeader();
     renderMessages();
   }
 }
 
 async function onSessionSelect(sessionId, shouldRenderList = true) {
-  if ((state.awaitingAssistant || state.queueSize > 0) && sessionId !== state.activeSessionId) {
+  if (hasOtherSessionActivity(state.activeProjectId, sessionId)) {
     setStatus('proses tetap berjalan di background', false, true);
   }
 
@@ -1227,10 +1776,17 @@ async function onSessionSelect(sessionId, shouldRenderList = true) {
   localStorage.setItem(`activeSessionId:${state.activeProjectId}`, sessionId);
   state.assistantFlashMessageId = '';
   state.chatWarning = null;
+  state.awaitingAssistant = isSessionAwaiting(state.activeProjectId, sessionId);
+  state.requestAbortController =
+    abortControllersBySession.get(getQueueKey(state.activeProjectId, sessionId)) || null;
+  updateSendButtonState();
+  mountSessionDomState(sessionId);
 
   const data = await api.getSession(state.activeProjectId, sessionId);
   state.activeSession = data.session;
   applySessionPreferences(state.activeSession);
+  syncActiveQueueSize();
+  syncProcessFromJobs();
 
   if (shouldRenderList) {
     renderSessionList();
@@ -1238,6 +1794,7 @@ async function onSessionSelect(sessionId, shouldRenderList = true) {
 
   renderHeader();
   renderMessages();
+  void drainPromptQueue(state.activeProjectId, sessionId);
 
   if (isMobileViewport()) {
     closeMobilePanel();
@@ -1282,7 +1839,7 @@ async function deleteSession(sessionId) {
     return;
   }
 
-  if (state.awaitingAssistant || state.queueSize > 0) {
+  if (isSessionBusy(state.activeProjectId, sessionId)) {
     setStatus('tunggu proses aktif/antrean selesai dulu', true);
     return;
   }
@@ -1303,6 +1860,7 @@ async function deleteSession(sessionId) {
 
   try {
     await api.deleteSession(state.activeProjectId, sessionId);
+    sessionDomCache.delete(sessionId);
     if (state.activeSessionId === sessionId) {
       state.activeSessionId = '';
       state.activeSession = null;
@@ -1410,47 +1968,64 @@ async function executePromptJob(job) {
   const provider = job.provider || state.activeProvider;
   const projectId = job.projectId || state.activeProjectId;
   const sessionId = job.sessionId || state.activeSessionId;
+  const isViewingSession = state.activeProjectId === projectId && state.activeSessionId === sessionId;
+  const promptKey =
+    job.promptKey ||
+    makePromptKey({
+      projectId,
+      sessionId,
+      provider,
+      model: job.model,
+      reasoning: job.reasoning,
+      mode: job.mode,
+      prompt,
+    });
+  const queueKey = getQueueKey(projectId, sessionId);
+  if (queueKey) {
+    inflightPromptKeys.set(queueKey, promptKey);
+  }
 
-  state.chatWarning = null;
-  state.preferences = normalizePreferences({
-    model: job.model,
-    reasoning: job.reasoning,
-    mode: job.mode,
-  });
-  setBusy(true);
-  state.awaitingAssistant = true;
-  state.process.hasEdits = false;
-  updateSendButtonState();
-  renderJobsIndicator();
-  setStatus('neural pipeline active...', false, true);
-  startProcess(PROCESS_LABELS.creating);
-  refreshSessionRuntimeIndicators();
-  addProcessEvent(`Sending prompt to ${provider}`);
+  setLocalAwaiting(projectId, sessionId, true);
+  if (isViewingSession) {
+    state.chatWarning = null;
+    state.preferences = normalizePreferences({
+      model: job.model,
+      reasoning: job.reasoning,
+      mode: job.mode,
+    });
+    state.process.hasEdits = false;
+    updateSendButtonState();
+    renderJobsIndicator();
+    setStatus('neural pipeline active...', false, true);
+    startProcess(PROCESS_LABELS.creating);
+    refreshSessionRuntimeIndicators();
+    addProcessEvent(`Sending prompt to ${provider}`);
+  }
 
   try {
     const controller = new AbortController();
-    state.requestAbortController = controller;
-    updateSendButtonState();
+    setAbortController(projectId, sessionId, controller);
 
-    if (state.activeSession && state.activeSession.id === sessionId) {
+    if (isViewingSession && state.activeSession && state.activeSession.id === sessionId) {
       await autoTitleSessionFromPrompt(prompt);
     }
     if (controller.signal.aborted) {
       throw createAbortError();
     }
-    setProcessStep(PROCESS_LABELS.sending);
+    if (isViewingSession) {
+      setProcessStep(PROCESS_LABELS.sending);
+    }
     const optimisticMessage = {
       id: `temp-${Date.now().toString(36)}`,
       role: 'user',
       provider,
       content: prompt,
-      model: state.preferences.model,
-      reasoning: state.preferences.reasoning,
-      mode: state.preferences.mode,
+      model: job.model,
+      reasoning: job.reasoning,
+      mode: job.mode,
       createdAt: new Date().toISOString(),
     };
 
-    const isViewingSession = state.activeProjectId === projectId && state.activeSessionId === sessionId;
     if (isViewingSession) {
       if (!state.activeSession || state.activeSession.id !== sessionId) {
         state.activeSession = {
@@ -1468,7 +2043,9 @@ async function executePromptJob(job) {
       renderHeader();
       renderMessages();
     }
-    setProcessStep(PROCESS_LABELS.waiting);
+    if (isViewingSession) {
+      setProcessStep(PROCESS_LABELS.waiting);
+    }
     void loadJobsIndicator();
 
     const data = await api.askInSession(
@@ -1477,14 +2054,15 @@ async function executePromptJob(job) {
       {
         prompt,
         provider,
-        model: state.preferences.model,
-        reasoning: state.preferences.reasoning,
-        mode: state.preferences.mode,
+        model: job.model,
+        reasoning: job.reasoning,
+        mode: job.mode,
       },
       { signal: controller.signal },
     );
-    state.requestAbortController = null;
-    setProcessStep(PROCESS_LABELS.persisting);
+    if (isViewingSession) {
+      setProcessStep(PROCESS_LABELS.persisting);
+    }
     const stillViewingSession = state.activeProjectId === projectId && state.activeSessionId === sessionId;
     if (stillViewingSession) {
       state.activeSession = data.session;
@@ -1493,22 +2071,26 @@ async function executePromptJob(job) {
     if (projectId === state.activeProjectId) {
       await loadSessions(projectId);
     }
-    stopProcess({ finalLabel: PROCESS_LABELS.done });
-    refreshSessionRuntimeIndicators();
-    addProcessEventsFromCliProgress(data.progress);
-    addProcessEventsFromResult(data.result);
-    addProcessEvent('Saved response');
-    state.chatWarning = null;
+    if (stillViewingSession) {
+      stopProcess({ finalLabel: PROCESS_LABELS.done });
+      refreshSessionRuntimeIndicators();
+      addProcessEventsFromCliProgress(data.progress);
+      addProcessEventsFromResult(data.result);
+      addProcessEvent('Saved response');
+      state.chatWarning = null;
+    }
     if (typeof data.result !== 'string' || data.result.trim().length === 0) {
-      state.chatWarning = {
-        provider,
-        code: null,
-        details: 'Provider tidak mengembalikan teks balasan.',
-        hint: 'Ulangi prompt atau cek login/status CLI provider di server.',
-        level: 'error',
-        title: 'Provider selesai, tapi tanpa konten balasan.',
-        createdAt: new Date().toISOString(),
-      };
+      if (stillViewingSession) {
+        state.chatWarning = {
+          provider,
+          code: null,
+          details: 'Provider tidak mengembalikan teks balasan.',
+          hint: 'Ulangi prompt atau cek login/status CLI provider di server.',
+          level: 'error',
+          title: 'Provider selesai, tapi tanpa konten balasan.',
+          createdAt: new Date().toISOString(),
+        };
+      }
     }
     if (stillViewingSession) {
       const latestAssistant = Array.isArray(state.activeSession && state.activeSession.messages)
@@ -1520,7 +2102,6 @@ async function executePromptJob(job) {
       setStatus('response received (background)', false, false);
     }
   } catch (error) {
-    state.requestAbortController = null;
     const aborted = isAbortError(error);
 
     if (projectId === state.activeProjectId && sessionId === state.activeSessionId) {
@@ -1532,63 +2113,85 @@ async function executePromptJob(job) {
     }
 
     if (aborted) {
-      stopProcess();
-      refreshSessionRuntimeIndicators();
-      state.chatWarning = {
-        provider,
-        code: null,
-        details: 'Permintaan dihentikan oleh pengguna.',
-        hint: 'Kirim prompt lagi jika ingin melanjutkan.',
-        level: 'info',
-        title: 'Proses dihentikan.',
-        createdAt: new Date().toISOString(),
-      };
-      setStatus('request stopped');
+      if (isViewingSession) {
+        stopProcess();
+        refreshSessionRuntimeIndicators();
+        state.chatWarning = {
+          provider,
+          code: null,
+          details: 'Permintaan dihentikan oleh pengguna.',
+          hint: 'Kirim prompt lagi jika ingin melanjutkan.',
+          level: 'info',
+          title: 'Proses dihentikan.',
+          createdAt: new Date().toISOString(),
+        };
+        setStatus('request stopped');
+      }
     } else {
-      state.chatWarning = buildChatWarning(error, provider);
-      stopProcess({
-        isError: true,
-        finalLabel:
-          state.chatWarning.code !== null
-            ? `Provider error (code ${state.chatWarning.code})`
-            : 'Provider error',
-      });
-      refreshSessionRuntimeIndicators();
-      setStatus(error.message || 'request failed', true);
+      if (isViewingSession) {
+        state.chatWarning = buildChatWarning(error, provider);
+        stopProcess({
+          isError: true,
+          finalLabel:
+            state.chatWarning.code !== null
+              ? `Provider error (code ${state.chatWarning.code})`
+              : 'Provider error',
+        });
+        refreshSessionRuntimeIndicators();
+        setStatus(error.message || 'request failed', true);
+      }
     }
   } finally {
-    state.awaitingAssistant = false;
-    setBusy(false);
-    if (!state.process.isError) {
-      stopProcess();
+    const viewingNow = state.activeProjectId === projectId && state.activeSessionId === sessionId;
+    if (queueKey && inflightPromptKeys.get(queueKey) === promptKey) {
+      inflightPromptKeys.delete(queueKey);
     }
-    refreshSessionRuntimeIndicators();
+    setLocalAwaiting(projectId, sessionId, false);
+    setAbortController(projectId, sessionId, null);
+    if (viewingNow) {
+      if (!state.process.isError) {
+        stopProcess();
+      }
+      refreshSessionRuntimeIndicators();
+    }
     void loadJobsIndicator();
     renderJobsIndicator();
-    renderHeader();
-    renderMessages();
-    updateSendButtonState();
+    if (viewingNow) {
+      renderHeader();
+      renderMessages();
+      updateSendButtonState();
+    }
+    void drainPromptQueue(projectId, sessionId);
   }
 }
 
-async function drainPromptQueue() {
-  if (state.drainingQueue || state.awaitingAssistant) {
+async function drainPromptQueue(projectId, sessionId) {
+  const entry = getQueueState(projectId, sessionId);
+  if (!entry) {
+    if (state.activeProjectId === projectId && state.activeSessionId === sessionId) {
+      syncActiveQueueSize();
+    }
     return;
   }
 
-  state.drainingQueue = true;
+  if (entry.state.draining || isSessionAwaiting(projectId, sessionId)) {
+    return;
+  }
+
+  entry.state.draining = true;
   try {
-    while (!state.awaitingAssistant && messageQueue.size() > 0) {
-      const job = messageQueue.dequeue();
+    while (!isSessionAwaiting(projectId, sessionId) && entry.queue.size() > 0) {
+      const job = entry.queue.dequeue();
       if (!job) {
         break;
       }
       await executePromptJob(job);
     }
   } finally {
-    state.drainingQueue = false;
-    updateQueueInfo();
-    updateSendButtonState();
+    entry.state.draining = false;
+    if (state.activeProjectId === projectId && state.activeSessionId === sessionId) {
+      syncActiveQueueSize();
+    }
   }
 }
 
@@ -1616,7 +2219,7 @@ async function sendPrompt(event) {
     return;
   }
 
-  if (state.busy && !state.awaitingAssistant) {
+  if (state.busy && !isActiveAwaiting()) {
     return;
   }
 
@@ -1628,6 +2231,21 @@ async function sendPrompt(event) {
     return;
   }
 
+  const promptKey = makePromptKey({
+    projectId: state.activeProjectId,
+    sessionId,
+    provider,
+    model,
+    reasoning,
+    mode,
+    prompt,
+  });
+  const queueKey = getQueueKey(state.activeProjectId, sessionId);
+  if (queueKey && inflightPromptKeys.get(queueKey) === promptKey) {
+    setStatus('prompt sama sedang diproses', false, true);
+    return;
+  }
+
   const job = {
     prompt,
     provider,
@@ -1636,25 +2254,34 @@ async function sendPrompt(event) {
     mode,
     projectId: state.activeProjectId,
     sessionId,
+    promptKey,
   };
 
   if (els.promptInput) {
     els.promptInput.value = '';
   }
 
-  messageQueue.enqueue(job);
-  if (state.awaitingAssistant) {
+  const entry = getQueueState(job.projectId, job.sessionId);
+  if (entry) {
+    const queued = entry.queue.list().some((item) => item && item.promptKey === promptKey);
+    if (queued) {
+      setStatus('prompt sama sudah ada di antrean', false, true);
+      return;
+    }
+    entry.queue.enqueue(job);
+  }
+  if (isActiveAwaiting()) {
     setStatus(`prompt dimasukkan ke antrean (${state.queueSize})`, false, true);
     addProcessEvent(`Queued prompt (${state.queueSize})`);
   } else {
     setStatus('prompt ditambahkan ke antrean', false, true);
   }
 
-  void drainPromptQueue();
+  void drainPromptQueue(job.projectId, job.sessionId);
 }
 
 async function onProjectSelectChange() {
-  if (state.awaitingAssistant || state.queueSize > 0) {
+  if (isActiveAwaiting() || state.queueSize > 0) {
     els.projectSelect.value = state.activeProjectId;
     setStatus('selesaikan proses/antrean dulu sebelum pindah project', true);
     return;
@@ -1663,6 +2290,7 @@ async function onProjectSelectChange() {
   state.activeProjectId = els.projectSelect.value;
   localStorage.setItem('activeProjectId', state.activeProjectId);
   state.chatWarning = null;
+  syncActiveQueueSize();
 
   if (!state.activeProjectId) {
     state.sessions = [];
@@ -1816,6 +2444,9 @@ async function init() {
   els.panelBackdrop.addEventListener('click', closeMobilePanel);
   if (els.promptInput) {
     els.promptInput.addEventListener('keydown', handlePromptKeydown);
+  }
+  if (els.chatLog) {
+    els.chatLog.addEventListener('scroll', handleChatScroll, { passive: true });
   }
   if (els.jobIndicator) {
     els.jobIndicator.addEventListener('click', (event) => {

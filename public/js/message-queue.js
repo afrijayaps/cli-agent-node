@@ -52,6 +52,9 @@ export function createMessageQueue({ onChange } = {}) {
     enqueue,
     dequeue,
     size,
+    list() {
+      return items.map((item) => ({ ...item }));
+    },
     clear,
   };
 }

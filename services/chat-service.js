@@ -1,12 +1,16 @@
+const crypto = require('crypto');
 const { AppError } = require('./errors');
 const { providers, isValidProvider, DEFAULT_PROVIDER } = require('../providers');
 const { appendMessages, getSession, getProject, setSessionPreferences } = require('./project-service');
 const { getSettings } = require('./settings-service');
+const { getAuthStatus } = require('./auth-status');
 const { logInfo, logError } = require('./logger');
 const { startJob, endJob } = require('./job-registry');
 
 const REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh'];
 const MODE_LEVELS = ['normal', 'plan'];
+const STATUS_COMMAND_PATTERN = /^\s*\/status(?:@\S+)?(?:\s+.*)?$/i;
+const inflightSessionRequests = new Map();
 
 function normalizeReasoning(value) {
   if (typeof value !== 'string') {
@@ -131,6 +135,31 @@ function composePrompt(prompt, settings, reasoning, mode) {
   return blocks.join('\n\n');
 }
 
+function hashPrompt(prompt) {
+  return crypto.createHash('sha256').update(String(prompt)).digest('hex');
+}
+
+function makePromptKey({
+  projectId,
+  sessionId,
+  provider,
+  model,
+  reasoning,
+  mode,
+  prompt,
+}) {
+  const promptHash = hashPrompt(prompt);
+  return [
+    projectId || '',
+    sessionId || '',
+    provider || '',
+    model || '',
+    reasoning || '',
+    mode || '',
+    promptHash,
+  ].join('::');
+}
+
 function normalizeProviderResult(result) {
   if (typeof result === 'string') {
     return {
@@ -154,6 +183,68 @@ function normalizeProviderResult(result) {
   };
 }
 
+function containsStatusCommand(prompt) {
+  if (typeof prompt !== 'string') {
+    return false;
+  }
+
+  return STATUS_COMMAND_PATTERN.test(prompt);
+}
+
+function normalizeStatusField(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function formatStatusOutput(statusPayload) {
+  const status = normalizeStatusField(statusPayload && statusPayload.status) || 'unknown';
+  const details = normalizeStatusField(statusPayload && statusPayload.details);
+  const account = normalizeStatusField(statusPayload && statusPayload.account);
+  const model = normalizeStatusField(statusPayload && statusPayload.model);
+  const session = normalizeStatusField(statusPayload && statusPayload.session);
+  const limit5h = normalizeStatusField(statusPayload && statusPayload.limit5h);
+  const limitWeekly = normalizeStatusField(statusPayload && statusPayload.limitWeekly);
+
+  const lines = [`Status (/status): ${status}`];
+
+  if (details) {
+    lines.push(`Details: ${details}`);
+  }
+  if (account) {
+    lines.push(`Account: ${account}`);
+  }
+  if (model) {
+    lines.push(`Model: ${model}`);
+  }
+  if (session) {
+    lines.push(`Session: ${session}`);
+  }
+  if (limit5h) {
+    lines.push(`5h limit: ${limit5h}`);
+  }
+  if (limitWeekly) {
+    lines.push(`Weekly limit: ${limitWeekly}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatStatusError(error) {
+  const details =
+    (error && typeof error.details === 'string' && error.details.trim()) ||
+    (error && typeof error.message === 'string' && error.message.trim()) ||
+    'status check failed';
+  return `Status (/status): error\nDetails: ${details}`;
+}
+
+async function getCodexStatusText() {
+  try {
+    const statusPayload = await getAuthStatus('codex');
+    return formatStatusOutput(statusPayload);
+  } catch (error) {
+    return formatStatusError(error);
+  }
+}
+
 async function askProvider({ provider, prompt, model, reasoning, mode }) {
   const settings = await getSettings();
   const primaryProvider = resolvePrimaryProvider(provider, settings);
@@ -161,6 +252,10 @@ async function askProvider({ provider, prompt, model, reasoning, mode }) {
     { provider: primaryProvider, prompt, model, reasoning, mode },
     primaryProvider,
   );
+  if (containsStatusCommand(normalized.prompt)) {
+    return await getCodexStatusText();
+  }
+
   const fallbackProvider = resolveFallbackProvider(settings, normalized.provider);
   const effectivePrompt = composePrompt(normalized.prompt, settings, normalized.reasoning, normalized.mode);
   const startedAt = Date.now();
@@ -248,9 +343,65 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     { provider: primaryProvider, prompt, model, reasoning, mode },
     primaryProvider,
   );
+  const promptKey = makePromptKey({
+    projectId,
+    sessionId,
+    provider: normalized.provider,
+    model: normalized.model,
+    reasoning: normalized.reasoning,
+    mode: normalized.mode,
+    prompt: normalized.prompt,
+  });
+  const existing = inflightSessionRequests.get(promptKey);
+  if (existing) {
+    return await existing;
+  }
+
+  const requestPromise = (async () => {
   const fallbackProvider = resolveFallbackProvider(settings, normalized.provider);
   const project = await getProject(projectId);
   const effectivePrompt = composePrompt(normalized.prompt, settings, normalized.reasoning, normalized.mode);
+
+  await appendMessages(projectId, sessionId, [
+    {
+      role: 'user',
+      provider: normalized.provider,
+      content: normalized.prompt,
+      model: normalized.model,
+      reasoning: normalized.reasoning,
+      mode: normalized.mode,
+    },
+  ]);
+
+  await setSessionPreferences(projectId, sessionId, {
+    model: normalized.model,
+    reasoning: normalized.reasoning,
+    mode: normalized.mode,
+  });
+
+  if (containsStatusCommand(normalized.prompt)) {
+    const statusText = await getCodexStatusText();
+
+    await appendMessages(projectId, sessionId, [
+      {
+        role: 'assistant',
+        provider: 'system',
+        content: statusText,
+        model: normalized.model,
+        reasoning: normalized.reasoning,
+        mode: normalized.mode,
+      },
+    ]);
+
+    return {
+      result: statusText,
+      progress: [],
+      session: await getSession(projectId, sessionId),
+      provider: 'system',
+      fallbackUsed: false,
+    };
+  }
+
   const startedAt = Date.now();
   const abortController = typeof AbortController === 'function' ? new AbortController() : null;
   const jobId = startJob({
@@ -279,23 +430,6 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     reasoning: normalized.reasoning,
     mode: normalized.mode,
     promptChars: normalized.prompt.length,
-  });
-
-  await appendMessages(projectId, sessionId, [
-    {
-      role: 'user',
-      provider: normalized.provider,
-      content: normalized.prompt,
-      model: normalized.model,
-      reasoning: normalized.reasoning,
-      mode: normalized.mode,
-    },
-  ]);
-
-  await setSessionPreferences(projectId, sessionId, {
-    model: normalized.model,
-    reasoning: normalized.reasoning,
-    mode: normalized.mode,
   });
 
   let result;
@@ -363,13 +497,23 @@ async function askInSession({ projectId, sessionId, provider, prompt, model, rea
     },
   ]);
 
-  return {
-    result: textResult,
-    progress,
-    session: await getSession(projectId, sessionId),
-    provider: usedProvider,
-    fallbackUsed: usedProvider !== normalized.provider,
-  };
+    return {
+      result: textResult,
+      progress,
+      session: await getSession(projectId, sessionId),
+      provider: usedProvider,
+      fallbackUsed: usedProvider !== normalized.provider,
+    };
+  })();
+
+  inflightSessionRequests.set(promptKey, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    if (inflightSessionRequests.get(promptKey) === requestPromise) {
+      inflightSessionRequests.delete(promptKey);
+    }
+  }
 }
 
 module.exports = {

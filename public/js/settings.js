@@ -10,6 +10,9 @@ const els = {
   aiPrimarySelect: document.getElementById('aiPrimarySelect'),
   aiFallbackSelect: document.getElementById('aiFallbackSelect'),
   aiSaveButton: document.getElementById('aiSaveButton'),
+  loginStatusDot: document.getElementById('loginStatusDot'),
+  loginStatusText: document.getElementById('loginStatusText'),
+  loginStatusHint: document.getElementById('loginStatusHint'),
   systemPromptInput: document.getElementById('systemPromptInput'),
   systemPromptSaveButton: document.getElementById('systemPromptSaveButton'),
   stopAllJobsButton: document.getElementById('stopAllJobsButton'),
@@ -117,6 +120,97 @@ function renderAiManager() {
   els.aiFallbackSelect.disabled = false;
   els.aiPrimarySelect.value = state.aiPrimary;
   els.aiFallbackSelect.value = state.aiFallback || '';
+}
+
+function setLoginStatus(status, details = '') {
+  if (!els.loginStatusDot || !els.loginStatusText || !els.loginStatusHint) {
+    return;
+  }
+
+  els.loginStatusDot.className = 'status-dot';
+  els.loginStatusText.textContent = 'Codex: unknown';
+  els.loginStatusHint.textContent = details || '';
+
+  if (status === 'logged_in') {
+    els.loginStatusDot.classList.add('ok');
+    els.loginStatusText.textContent = 'Codex: Logged in';
+    return;
+  }
+
+  if (status === 'logged_out') {
+    els.loginStatusDot.classList.add('warn');
+    els.loginStatusText.textContent = 'Codex: Logged out';
+    return;
+  }
+
+  if (status === 'cli_missing') {
+    els.loginStatusDot.classList.add('error');
+    els.loginStatusText.textContent = 'Codex: CLI not found';
+    return;
+  }
+
+  if (status === 'error') {
+    els.loginStatusDot.classList.add('error');
+    els.loginStatusText.textContent = 'Codex: Error';
+    return;
+  }
+
+  els.loginStatusDot.classList.add('unknown');
+}
+
+async function loadLoginStatus() {
+  if (!els.loginStatusDot || !els.loginStatusText || !els.loginStatusHint) {
+    return;
+  }
+
+  setLoginStatus('unknown', 'checking status...');
+  try {
+    const result = await api.getAuthStatus('codex');
+    const status = result && result.status ? result.status : 'unknown';
+    const details = result && typeof result.details === 'string' ? result.details : '';
+    const metaParts = [];
+    if (result && typeof result.account === 'string' && result.account.trim().length > 0) {
+      metaParts.push(`Account: ${result.account.trim()}`);
+    }
+    if (result && typeof result.model === 'string' && result.model.trim().length > 0) {
+      metaParts.push(`Model: ${result.model.trim()}`);
+    }
+    if (result && typeof result.session === 'string' && result.session.trim().length > 0) {
+      metaParts.push(`Session: ${result.session.trim()}`);
+    }
+    if (result && typeof result.limit5h === 'string' && result.limit5h.trim().length > 0) {
+      metaParts.push(`5h: ${result.limit5h.trim()}`);
+    }
+    if (
+      result &&
+      typeof result.limitWeekly === 'string' &&
+      result.limitWeekly.trim().length > 0
+    ) {
+      metaParts.push(`Weekly: ${result.limitWeekly.trim()}`);
+    }
+
+    let hint = metaParts.length > 0 ? metaParts.join(' • ') : details;
+    if (!hint || hint.trim().length === 0) {
+      hint = details;
+    }
+    if (status === 'logged_out') {
+      hint = hint
+        ? `${hint} • Login: sudo codex login`
+        : 'Login: sudo codex login';
+    }
+    if (status === 'error' && /sudo failed/i.test(details)) {
+      hint = 'Login: sudo codex login';
+    }
+    if (hint && hint.trim().length > 0) {
+      hint = `${hint} • Checked as root`;
+    } else {
+      hint = 'Checked as root';
+    }
+    setLoginStatus(status, hint);
+  } catch (error) {
+    const message = error && typeof error.message === 'string' ? error.message : 'status unknown';
+    setLoginStatus('unknown', message);
+  }
 }
 
 async function restartServer() {
@@ -311,6 +405,7 @@ async function init() {
     applyTheme(state.currentTheme);
     renderThemes();
     renderAiManager();
+    await loadLoginStatus();
     els.masterRootInput.value = state.masterProjectRoot;
     if (els.systemPromptInput) {
       els.systemPromptInput.value = state.systemPrompt;

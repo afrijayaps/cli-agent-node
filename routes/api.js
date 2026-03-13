@@ -9,6 +9,7 @@ const { listModels } = require('../services/model-service');
 const { getSettings, updateSettings } = require('../services/settings-service');
 const { logError } = require('../services/logger');
 const { listJobs, countJobs, stopAllJobs } = require('../services/job-registry');
+const { getAuthStatus } = require('../services/auth-status');
 const {
   listProjects,
   createProject,
@@ -138,6 +139,58 @@ router.get('/settings', async (_req, res) => {
     res.status(200).json(settings);
   } catch (error) {
     handleError(res, error, 'Failed to load settings:');
+  }
+});
+
+router.get('/auth-status', async (req, res) => {
+  const provider =
+    typeof req.query.provider === 'string' && req.query.provider.trim().length > 0
+      ? req.query.provider.trim()
+      : 'codex';
+
+  if (provider !== 'codex') {
+    res.status(400).json({
+      error: 'Validation error',
+      details: 'provider is not supported for auth status.',
+    });
+    return;
+  }
+
+  try {
+    const result = await getAuthStatus(provider);
+    res.status(200).json({
+      provider,
+      ...result,
+    });
+  } catch (error) {
+    if (error && error.code === 'UNSUPPORTED_PROVIDER') {
+      res.status(400).json({
+        error: 'Validation error',
+        details: error.message || 'provider is not supported for auth status.',
+      });
+      return;
+    }
+
+    if (error && error.isCliError) {
+      const details = String(error.details || '');
+      if (/not found/i.test(details) || /not recognized/i.test(details) || /PATH/i.test(details)) {
+        res.status(200).json({
+          provider,
+          status: 'cli_missing',
+          details: details || 'CLI executable not found in PATH.',
+        });
+        return;
+      }
+
+      res.status(200).json({
+        provider,
+        status: 'error',
+        details: details || 'CLI status check failed.',
+      });
+      return;
+    }
+
+    handleError(res, error, 'Failed to check auth status:');
   }
 });
 

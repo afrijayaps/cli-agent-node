@@ -13,6 +13,8 @@ function toSafeCliError(error, stderr) {
   let details = 'CLI process failed.';
   if (error && error.code === 'ENOENT') {
     details = 'CLI executable not found in PATH.';
+  } else if (error && error.killed && error.signal) {
+    details = 'CLI command timed out.';
   } else if (
     /command not found/i.test(detailsFromStderr) ||
     /\bnot found\b/i.test(detailsFromStderr) ||
@@ -49,6 +51,10 @@ async function runCommand(command, options = {}) {
       timeout: 0,
       maxBuffer: 10 * 1024 * 1024,
     };
+
+    if (options && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+      execOptions.timeout = options.timeoutMs;
+    }
 
     if (options && typeof options.cwd === 'string' && options.cwd.trim().length > 0) {
       const cwd = options.cwd.trim();

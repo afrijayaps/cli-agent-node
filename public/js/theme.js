@@ -1,6 +1,6 @@
 export const THEME_PREVIEWS = {
   aether:
-    'radial-gradient(circle at 12% -15%, rgba(100,181,173,0.45), transparent 40%), linear-gradient(130deg, #14181d, #0f1113)',
+    'radial-gradient(circle at 12% -15%, rgba(79,209,197,0.55), transparent 40%), linear-gradient(130deg, #0f141b, #0a0f15)',
   slate:
     'radial-gradient(circle at 10% -20%, rgba(148,163,184,0.5), transparent 42%), linear-gradient(130deg, #f1f5f9, #dfe7f0)',
   ember:

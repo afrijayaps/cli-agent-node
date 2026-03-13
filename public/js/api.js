@@ -108,6 +108,10 @@ export const api = {
     const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
     return request(`/api/models${query}`);
   },
+  getAuthStatus(provider) {
+    const query = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return request(`/api/auth-status${query}`);
+  },
   restartServer() {
     return request('/api/restart', {
       method: 'POST',

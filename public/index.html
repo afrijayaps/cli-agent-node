@@ -90,6 +90,7 @@
             <div id="statusText" class="status">Status: idle</div>
             <div id="queueInfo" class="status-queue" hidden>Queue: 0</div>
           </div>
+          <div id="processInline" class="process-inline" hidden></div>
           <div class="composer-box">
             <textarea
               id="promptInput"
@@ -103,7 +104,8 @@
             </div>
           </div>
           <div class="composer-controls-bottom">
-          <div class="chip-icon-wrap icon-only" data-icon="🤖">
+          <div class="chip-icon-wrap icon-only">
+            <span class="chip-icon icon-model" aria-hidden="true"></span>
             <select id="modelSelect" class="chip-select icon-only" aria-label="Model"></select>
           </div>
           <div class="chip-icon-wrap icon-model icon-input" style="display: none" id="modelInputWrap">
@@ -115,7 +117,8 @@
               aria-label="Model manual"
             />
           </div>
-          <div class="chip-icon-wrap icon-only" data-icon="🧠">
+          <div class="chip-icon-wrap icon-only">
+            <span class="chip-icon icon-reasoning" aria-hidden="true"></span>
             <select id="reasoningSelect" class="chip-select icon-only" aria-label="Reasoning">
               <option value="low">Reasoning: Low</option>
               <option value="medium" selected>Reasoning: Medium</option>
@@ -123,7 +126,8 @@
               <option value="xhigh">Reasoning: Extra High</option>
             </select>
           </div>
-          <div class="chip-icon-wrap icon-only" data-icon="⚙️">
+          <div class="chip-icon-wrap icon-only">
+            <span class="chip-icon icon-mode" aria-hidden="true"></span>
             <select id="modeSelect" class="chip-select icon-only" aria-label="Mode">
               <option value="normal">Mode: Normal</option>
               <option value="plan">Mode: Plan</option>

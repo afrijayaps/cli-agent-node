@@ -2,7 +2,7 @@ const THEMES = [
   {
     id: 'aether',
     name: 'Aether Mint',
-    description: 'Deep charcoal with muted teal highlights.',
+    description: 'Deep charcoal base with mint-teal accents.',
   },
   {
     id: 'slate',

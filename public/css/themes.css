@@ -15,18 +15,19 @@
 }
 
 html[data-theme='aether'] {
-  --bg: #f4f6f8;
-  --bg-alt: #eef2f5;
-  --surface: #ffffff;
-  --surface-soft: #f7f9fb;
-  --line: #d8e0e7;
-  --text: #18212b;
-  --text-muted: #607080;
-  --primary: #286f6a;
-  --primary-strong: #1f5b56;
-  --accent: #2f8a59;
-  --danger: #c7505b;
-  --gradient: linear-gradient(180deg, #f6f8fb 0%, #eef2f5 100%);
+  --bg: #0d1116;
+  --bg-alt: #0f141b;
+  --surface: #121822;
+  --surface-soft: #151c27;
+  --line: #243041;
+  --text: #e6edf5;
+  --text-muted: #9aa7b7;
+  --primary: #4fd1c5;
+  --primary-strong: #2fb5a8;
+  --accent: #5bd6a0;
+  --danger: #e3707b;
+  --shadow: 0 12px 28px rgba(6, 9, 14, 0.42);
+  --gradient: linear-gradient(180deg, #0f141b 0%, #0a0f15 100%);
 }
 
 html[data-theme='slate'] {

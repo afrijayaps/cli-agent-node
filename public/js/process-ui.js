@@ -126,12 +126,13 @@ function renderProcessList(events, isError) {
   return `<div class="${className}">${items}</div>`;
 }
 
-export function createProcessUI({ chatLog, processState, renderMessages, labels }) {
+export function createProcessUI({ chatLog, toggleRoot, processState, renderMessages, labels }) {
   const state = processState || {};
+  const bindRoot = toggleRoot || chatLog;
 
-  if (chatLog && !chatLog.__processToggleBound) {
-    chatLog.__processToggleBound = true;
-    chatLog.addEventListener('click', (event) => {
+  if (bindRoot && !bindRoot.__processToggleBound) {
+    bindRoot.__processToggleBound = true;
+    bindRoot.addEventListener('click', (event) => {
       const toggle = event.target.closest('[data-process-toggle]');
       if (!toggle) {
         return;
@@ -184,6 +185,8 @@ export function createProcessUI({ chatLog, processState, renderMessages, labels 
     const metaLabel = snapshot.hasEvents
       ? `${snapshot.events.length} aktivitas`
       : 'Belum ada detail';
+    const phaseLabel = snapshot.label || title;
+    const phaseClass = `thinking-phase${showAll ? '' : ' compact'}`;
 
     return `
       <section class="${shellClass}">
@@ -196,24 +199,59 @@ export function createProcessUI({ chatLog, processState, renderMessages, labels 
             toggleText,
           )}" aria-expanded="${showAll ? 'true' : 'false'}">${toggleLabel}</button>
         </div>
-        ${
-          showAll
-            ? `
-          <div class="thinking-phase">${escapeHtml(snapshot.label || title)}</div>
-          <div class="thinking-rail"><span style="width: ${percent}%"></span></div>
-          ${processList}
-          <div class="thinking-meta muted">${escapeHtml(elapsedLabel)} • ${escapeHtml(
-              metaLabel,
-            )}</div>
-        `
-            : ''
-        }
+        <div class="${phaseClass}">${escapeHtml(phaseLabel)}</div>
+        <div class="thinking-rail"><span style="width: ${percent}%"></span></div>
+        ${showAll ? processList : ''}
+        <div class="thinking-meta muted">${escapeHtml(elapsedLabel)} • ${escapeHtml(metaLabel)}</div>
       </section>
+    `;
+  }
+
+  function renderProcessInlinePanel(snapshot) {
+    if (!snapshot) {
+      return '';
+    }
+
+    const showAll = snapshot.showAll && snapshot.hasEvents;
+    const title = DEFAULT_TITLE;
+    const toggleLabel = showAll ? '▲' : '▼';
+    const toggleText = showAll ? 'Sembunyikan detail' : 'Lihat detail';
+    const percent = Math.max(
+      6,
+      Math.min(100, getPhasePercent(snapshot.label, labels, snapshot.active)),
+    );
+    const phaseLabel = snapshot.label || title;
+    const elapsedLabel = formatDuration(snapshot.elapsedMs);
+    const metaLabel = snapshot.hasEvents
+      ? `${snapshot.events.length} aktivitas`
+      : 'Belum ada detail';
+    const processList = showAll ? renderProcessList(snapshot.events, snapshot.isError) : '';
+    const shellClass = `process-inline${showAll ? ' open' : ''}${
+      snapshot.isError ? ' error' : ''
+    }`;
+
+    return `
+      <div class="${shellClass}">
+        <div class="process-inline-row">
+          <div class="process-inline-title">
+            <span class="signal-ring"></span>
+            <span>${escapeHtml(title)}</span>
+          </div>
+          <div class="process-inline-phase" title="${escapeHtml(phaseLabel)}">${escapeHtml(phaseLabel)}</div>
+          <div class="process-inline-rail"><span style="width: ${percent}%"></span></div>
+          <div class="process-inline-meta">${escapeHtml(elapsedLabel)} • ${escapeHtml(metaLabel)}</div>
+          <button class="process-toggle inline process-inline-toggle" data-process-toggle type="button" aria-label="${escapeHtml(
+            toggleText,
+          )}" aria-expanded="${showAll ? 'true' : 'false'}">${toggleLabel}</button>
+        </div>
+        ${showAll ? `<div class="process-inline-detail">${processList}</div>` : ''}
+      </div>
     `;
   }
 
   return {
     getSnapshot,
     renderThinkingPanel,
+    renderProcessInlinePanel,
   };
 }
